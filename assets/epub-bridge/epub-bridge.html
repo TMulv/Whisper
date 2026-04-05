@@ -2,162 +2,307 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Whisper Reader</title>
   <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
-    #viewer {
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
       width: 100%;
       height: 100%;
       overflow: hidden;
+      -webkit-text-size-adjust: none;
+      text-size-adjust: none;
     }
-    /* Theme classes injected by whisper.setTheme() */
-    body.theme-eink {
-      background: #fff !important;
-      color: #000 !important;
-      /* Disable all transitions for e-ink */
-      * { transition: none !important; animation: none !important; }
+
+    body {
+      background: #ffffff;
+      color: #1a1a1a;
+      font-family: Georgia, 'Times New Roman', serif;
+      transition: background 0.2s, color 0.2s;
     }
-    body.theme-dark {
-      background: #121212 !important;
-      color: #e0e0e0 !important;
+
+    #viewer {
+      width: 100%;
+      height: 100%;
     }
-    body.theme-sepia {
-      background: #f4ecd8 !important;
-      color: #3b2b1a !important;
+
+    /* ── Themes ── */
+    body.theme-light  { background: #ffffff; color: #1a1a1a; }
+    body.theme-dark   { background: #121212; color: #e0e0e0; }
+    body.theme-sepia  { background: #f5efe0; color: #3b2b1a; }
+    body.theme-eink   { background: #ffffff; color: #000000; }
+
+    /* E-ink: kill all transitions and animations */
+    body.theme-eink *, body.theme-eink *::before, body.theme-eink *::after {
+      transition: none !important;
+      animation: none !important;
+      box-shadow: none !important;
     }
+
+    /* ── Tap zones for page turn (invisible overlays) ── */
+    #tap-prev, #tap-next {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      width: 30%;
+      z-index: 10;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #tap-prev { left: 0; }
+    #tap-next { right: 0; }
+
+    /* ── Loading overlay ── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: inherit;
+      z-index: 100;
+      gap: 16px;
+    }
+    #loading.hidden { display: none; }
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(0,0,0,0.1);
+      border-top-color: #1a1a2e;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    body.theme-dark .spinner { border-top-color: #bb86fc; }
+    body.theme-eink .spinner { animation: none; display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading p { font-size: 14px; color: #888; font-family: -apple-system, sans-serif; }
   </style>
 </head>
-<body>
+<body class="theme-light">
+
+  <!-- Tap zones -->
+  <div id="tap-prev" onclick="whisper._prevPage()"></div>
+  <div id="tap-next" onclick="whisper._nextPage()"></div>
+
+  <!-- Loading indicator -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <p>Loading book…</p>
+  </div>
+
+  <!-- epub.js renders here -->
   <div id="viewer"></div>
 
   <script>
-    // ── State ──────────────────────────────────────────────────────────────────
-    let book = null;
-    let rendition = null;
+    // ── State ─────────────────────────────────────────────────────────────────
+    var _book = null;
+    var _rendition = null;
+    var _chapters = [];   // [{index, title, href, cfi}]
+    var _currentTheme = 'light';
+    var _fontSize = 16;   // px
+    var _locationsReady = false;
 
-    // ── Outbound: post message to React Native ─────────────────────────────────
-    function postToRN(message) {
+    // ── postMessage bridge ────────────────────────────────────────────────────
+    function postToRN(msg) {
       try {
         if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify(message));
+          window.ReactNativeWebView.postMessage(JSON.stringify(msg));
         } else {
-          // Development: log to console when testing in browser
-          console.log('[epub-bridge → RN]', message);
+          // Desktop browser testing
+          console.log('[→ RN]', msg);
         }
       } catch (e) {
-        console.error('postToRN error', e);
+        console.error('postToRN', e);
       }
     }
 
-    // ── whisper API (called from RN via injectJavaScript) ──────────────────────
+    function showLoading(visible) {
+      var el = document.getElementById('loading');
+      if (el) el.className = visible ? '' : 'hidden';
+    }
+
+    // ── Theme helpers ─────────────────────────────────────────────────────────
+    var THEME_STYLES = {
+      light:  { body: { background: '#ffffff', color: '#1a1a1a' } },
+      dark:   { body: { background: '#121212', color: '#e0e0e0' } },
+      sepia:  { body: { background: '#f5efe0', color: '#3b2b1a' } },
+      eink:   { body: { background: '#ffffff', color: '#000000' } },
+    };
+
+    function applyThemeToRendition(themeName) {
+      if (!_rendition) return;
+      var t = THEME_STYLES[themeName] || THEME_STYLES.light;
+      _rendition.themes.default({
+        body: {
+          background: t.body.background + ' !important',
+          color: t.body.color + ' !important',
+          'font-size': _fontSize + 'px !important',
+          'font-family': "Georgia, 'Times New Roman', serif",
+          'line-height': '1.7 !important',
+          padding: '16px 20px !important',
+        },
+        'p, div, span': {
+          'font-size': 'inherit !important',
+          color: 'inherit !important',
+        },
+        a: { color: themeName === 'dark' ? '#bb86fc' : '#1a1a2e' },
+      });
+      // Also kill transitions in e-ink mode inside iframe
+      if (themeName === 'eink') {
+        _rendition.themes.default({
+          '*': { transition: 'none !important', animation: 'none !important' },
+        });
+      }
+    }
+
+    // ── Chapter helpers ───────────────────────────────────────────────────────
+    function buildChapterList(toc, result, depth) {
+      depth = depth || 0;
+      result = result || [];
+      toc.forEach(function(item) {
+        result.push({ index: result.length, title: item.label.trim(), href: item.href });
+        if (item.subitems && item.subitems.length && depth < 2) {
+          buildChapterList(item.subitems, result, depth + 1);
+        }
+      });
+      return result;
+    }
+
+    function getCurrentChapterIndex(cfi) {
+      // Extract spine step: epubcfi(/6/N[id]!/...) → index = (N-2)/2
+      var m = cfi.match(/epubcfi\(\/6\/(\d+)/);
+      if (m) return Math.max(0, Math.floor((parseInt(m[1], 10) - 2) / 2));
+      return 0;
+    }
+
+    // ── Public whisper API (called via injectJavaScript from RN) ─────────────
     window.whisper = {
-      loadBook: async function(urlOrBase64) {
+
+      loadBook: function(urlOrArrayBuffer) {
+        showLoading(true);
         try {
-          book = ePub(urlOrBase64);
-          rendition = book.renderTo('viewer', {
-            width: '100%',
-            height: '100%',
+          _book = ePub(urlOrArrayBuffer);
+
+          _rendition = _book.renderTo('viewer', {
+            width: window.innerWidth,
+            height: window.innerHeight,
             spread: 'none',
             flow: 'paginated',
+            minSpreadWidth: 9999,  // Force single column
           });
 
-          await rendition.display();
+          // Apply initial theme before first render
+          applyThemeToRendition(_currentTheme);
 
-          // Build chapter list from TOC
-          const toc = await book.loaded.navigation;
-          const chapters = toc.toc.map(function(item, idx) {
-            return { index: idx, title: item.label.trim(), href: item.href };
+          _rendition.display().then(function() {
+            showLoading(false);
+
+            // Build chapter list from navigation
+            return _book.loaded.navigation;
+          }).then(function(nav) {
+            _chapters = buildChapterList(nav.toc);
+            postToRN({ type: 'CHAPTER_LIST', chapters: _chapters });
+            postToRN({ type: 'READY' });
+
+            // Start generating locations in background (needed for % progress)
+            _book.locations.generate(1000).then(function() {
+              _locationsReady = true;
+              postToRN({ type: 'LOCATIONS_READY', count: _book.locations.length() });
+            });
+
+          }).catch(function(err) {
+            showLoading(false);
+            postToRN({ type: 'ERROR', message: 'Failed to render book: ' + (err.message || String(err)) });
           });
-          postToRN({ type: 'CHAPTER_LIST', chapters });
 
-          // Track location changes
-          rendition.on('locationChanged', function(location) {
-            const cfi = location.start.cfi;
-            const chapterIndex = getChapterIndexFromCfi(cfi);
-            const charOffset = location.start.offset || 0;
+          // Position tracking on every page turn
+          _rendition.on('locationChanged', function(loc) {
+            var cfi = loc.start.cfi;
+            var charOffset = loc.start.offset || 0;
+            var chapterIndex = getCurrentChapterIndex(cfi);
 
-            book.locations.percentageFromCfi(cfi).then(function(percent) {
-              postToRN({
-                type: 'POSITION_CHANGE',
-                cfi: cfi,
-                chapterIndex: chapterIndex,
-                charOffset: charOffset,
-                percentComplete: percent || 0,
-              });
+            // Compute percent if locations are ready, else use 0
+            var percent = 0;
+            if (_locationsReady) {
+              try { percent = _book.locations.percentageFromCfi(cfi) || 0; } catch(e) {}
+            }
+
+            postToRN({
+              type: 'POSITION_CHANGE',
+              cfi: cfi,
+              chapterIndex: chapterIndex,
+              charOffset: charOffset,
+              percentComplete: percent,
             });
           });
 
-          postToRN({ type: 'READY' });
-        } catch (e) {
-          postToRN({ type: 'ERROR', message: e.message });
+          // Forward key presses (e-ink hardware buttons may map to arrow keys)
+          document.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') whisper._nextPage();
+            if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   whisper._prevPage();
+          });
+
+        } catch (err) {
+          showLoading(false);
+          postToRN({ type: 'ERROR', message: 'loadBook failed: ' + (err.message || String(err)) });
         }
       },
 
       goTo: function(cfi) {
-        if (rendition) rendition.display(cfi);
+        if (_rendition) {
+          showLoading(true);
+          _rendition.display(cfi).then(function() {
+            showLoading(false);
+          }).catch(function() { showLoading(false); });
+        }
       },
 
       goToChapter: function(index) {
-        if (!book || !rendition) return;
-        book.loaded.navigation.then(function(nav) {
-          const item = nav.toc[index];
-          if (item) rendition.display(item.href);
-        });
+        if (!_book || !_rendition) return;
+        var chapter = _chapters[index];
+        if (chapter) {
+          showLoading(true);
+          _rendition.display(chapter.href).then(function() {
+            showLoading(false);
+          }).catch(function() { showLoading(false); });
+        }
       },
 
       setFontSize: function(px) {
-        if (rendition) {
-          rendition.themes.fontSize(px + 'px');
+        _fontSize = px;
+        if (_rendition) {
+          _rendition.themes.fontSize(px + 'px');
+          applyThemeToRendition(_currentTheme);
         }
       },
 
       setTheme: function(themeName) {
-        // themeName: 'light' | 'dark' | 'sepia' | 'eink'
-        document.body.className = document.body.className
-          .replace(/theme-\w+/g, '')
-          .trim();
-        document.body.classList.add('theme-' + themeName);
-
-        if (rendition) {
-          if (themeName === 'dark') {
-            rendition.themes.override('color', '#e0e0e0');
-            rendition.themes.override('background', '#121212');
-          } else if (themeName === 'sepia') {
-            rendition.themes.override('color', '#3b2b1a');
-            rendition.themes.override('background', '#f4ecd8');
-          } else if (themeName === 'eink') {
-            rendition.themes.override('color', '#000000');
-            rendition.themes.override('background', '#ffffff');
-          } else {
-            rendition.themes.override('color', '#1a1a1a');
-            rendition.themes.override('background', '#ffffff');
-          }
-        }
+        _currentTheme = themeName;
+        // Update body class
+        document.body.className = 'theme-' + themeName;
+        // Push styles into epub iframe
+        applyThemeToRendition(themeName);
+        document.getElementById('loading').style.background =
+          (THEME_STYLES[themeName] || THEME_STYLES.light).body.background;
       },
 
-      generateLocations: function() {
-        if (book) {
-          book.locations.generate(1024).then(function() {
-            postToRN({ type: 'LOCATIONS_READY' });
-          });
-        }
+      getChapters: function() {
+        postToRN({ type: 'CHAPTER_LIST', chapters: _chapters });
+      },
+
+      // ── Internal page navigation (also used by tap zones) ──
+      _nextPage: function() {
+        if (_rendition) _rendition.next();
+      },
+      _prevPage: function() {
+        if (_rendition) _rendition.prev();
       },
     };
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
-    function getChapterIndexFromCfi(cfi) {
-      // Extract spine step from CFI: epubcfi(/6/N!) → chapter (N-2)/2
-      const match = cfi.match(/epubcfi\(\/6\/(\d+)/);
-      if (match) {
-        return Math.max(0, (parseInt(match[1], 10) - 2) / 2);
-      }
-      return 0;
-    }
-
-    // Signal that the bridge is ready to receive commands
+    // Signal to RN that the JS runtime is ready to receive commands
     postToRN({ type: 'BRIDGE_LOADED' });
   </script>
 </body>
