@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Whisper Reader</title>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+    #viewer {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    /* Theme classes injected by whisper.setTheme() */
+    body.theme-eink {
+      background: #fff !important;
+      color: #000 !important;
+      /* Disable all transitions for e-ink */
+      * { transition: none !important; animation: none !important; }
+    }
+    body.theme-dark {
+      background: #121212 !important;
+      color: #e0e0e0 !important;
+    }
+    body.theme-sepia {
+      background: #f4ecd8 !important;
+      color: #3b2b1a !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="viewer"></div>
+
+  <script>
+    // ── State ──────────────────────────────────────────────────────────────────
+    let book = null;
+    let rendition = null;
+
+    // ── Outbound: post message to React Native ─────────────────────────────────
+    function postToRN(message) {
+      try {
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify(message));
+        } else {
+          // Development: log to console when testing in browser
+          console.log('[epub-bridge → RN]', message);
+        }
+      } catch (e) {
+        console.error('postToRN error', e);
+      }
+    }
+
+    // ── whisper API (called from RN via injectJavaScript) ──────────────────────
+    window.whisper = {
+      loadBook: async function(urlOrBase64) {
+        try {
+          book = ePub(urlOrBase64);
+          rendition = book.renderTo('viewer', {
+            width: '100%',
+            height: '100%',
+            spread: 'none',
+            flow: 'paginated',
+          });
+
+          await rendition.display();
+
+          // Build chapter list from TOC
+          const toc = await book.loaded.navigation;
+          const chapters = toc.toc.map(function(item, idx) {
+            return { index: idx, title: item.label.trim(), href: item.href };
+          });
+          postToRN({ type: 'CHAPTER_LIST', chapters });
+
+          // Track location changes
+          rendition.on('locationChanged', function(location) {
+            const cfi = location.start.cfi;
+            const chapterIndex = getChapterIndexFromCfi(cfi);
+            const charOffset = location.start.offset || 0;
+
+            book.locations.percentageFromCfi(cfi).then(function(percent) {
+              postToRN({
+                type: 'POSITION_CHANGE',
+                cfi: cfi,
+                chapterIndex: chapterIndex,
+                charOffset: charOffset,
+                percentComplete: percent || 0,
+              });
+            });
+          });
+
+          postToRN({ type: 'READY' });
+        } catch (e) {
+          postToRN({ type: 'ERROR', message: e.message });
+        }
+      },
+
+      goTo: function(cfi) {
+        if (rendition) rendition.display(cfi);
+      },
+
+      goToChapter: function(index) {
+        if (!book || !rendition) return;
+        book.loaded.navigation.then(function(nav) {
+          const item = nav.toc[index];
+          if (item) rendition.display(item.href);
+        });
+      },
+
+      setFontSize: function(px) {
+        if (rendition) {
+          rendition.themes.fontSize(px + 'px');
+        }
+      },
+
+      setTheme: function(themeName) {
+        // themeName: 'light' | 'dark' | 'sepia' | 'eink'
+        document.body.className = document.body.className
+          .replace(/theme-\w+/g, '')
+          .trim();
+        document.body.classList.add('theme-' + themeName);
+
+        if (rendition) {
+          if (themeName === 'dark') {
+            rendition.themes.override('color', '#e0e0e0');
+            rendition.themes.override('background', '#121212');
+          } else if (themeName === 'sepia') {
+            rendition.themes.override('color', '#3b2b1a');
+            rendition.themes.override('background', '#f4ecd8');
+          } else if (themeName === 'eink') {
+            rendition.themes.override('color', '#000000');
+            rendition.themes.override('background', '#ffffff');
+          } else {
+            rendition.themes.override('color', '#1a1a1a');
+            rendition.themes.override('background', '#ffffff');
+          }
+        }
+      },
+
+      generateLocations: function() {
+        if (book) {
+          book.locations.generate(1024).then(function() {
+            postToRN({ type: 'LOCATIONS_READY' });
+          });
+        }
+      },
+    };
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function getChapterIndexFromCfi(cfi) {
+      // Extract spine step from CFI: epubcfi(/6/N!) → chapter (N-2)/2
+      const match = cfi.match(/epubcfi\(\/6\/(\d+)/);
+      if (match) {
+        return Math.max(0, (parseInt(match[1], 10) - 2) / 2);
+      }
+      return 0;
+    }
+
+    // Signal that the bridge is ready to receive commands
+    postToRN({ type: 'BRIDGE_LOADED' });
+  </script>
+</body>
+</html>
