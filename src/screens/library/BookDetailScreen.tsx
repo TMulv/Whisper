@@ -13,10 +13,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuth } from '@/hooks/useAuth';
-import { listBooks, writeBook } from '@/services/firebase/firestoreService';
-import { SyncMode } from '@/types/book';
+import { listBooks, writeBook, deleteBook } from '@/services/firebase/firestoreService';
+import { getCachedPath } from '@/services/storage/localStorageService';
+import { parseChaptersJson, createFallbackChapter } from '@/services/audio/m4bParser';
+import { useNowPlaying } from '@/context/NowPlayingContext';
+import { navigateRoot } from '@/navigation/navigationRef';
+import { SyncMode, LocalBook } from '@/types/book';
 import { FirestoreBook } from '@/types/firebase';
 import { formatDuration } from '@/utils/timeUtils';
+import { File } from 'expo-file-system';
 import type { LibraryStackParamList } from '@/navigation/types';
 
 type Props = NativeStackScreenProps<LibraryStackParamList, 'BookDetail'>;
@@ -49,8 +54,10 @@ export default function BookDetailScreen() {
   const [book, setBook] = useState<(FirestoreBook & { id: string }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadingAudio, setLoadingAudio] = useState(false);
   const [syncMode, setSyncMode] = useState<SyncMode>('chapter');
   const [hasSyncMap, setHasSyncMap] = useState(false);
+  const { startPlayback } = useNowPlaying();
 
   useEffect(() => {
     if (!user) return;
@@ -80,6 +87,76 @@ export default function BookDetailScreen() {
 
   const handleOpenReader = () => {
     navigation.navigate('Reader', { bookId: params.bookId });
+  };
+
+  const handleDelete = () => {
+    Alert.alert('Delete Book', 'Are you sure?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          if (!user) return;
+          await deleteBook(user.uid, params.bookId);
+          navigation.goBack();
+        },
+      },
+    ]);
+  };
+
+  const handlePlayAudio = async () => {
+    if (!book) return;
+    setLoadingAudio(true);
+    try {
+      // Determine audio extension from the stored path
+      const ext = book.audioPath.split('.').pop() ?? 'm4b';
+      const localAudioUri = await getCachedPath(params.bookId, 'audio', ext);
+      if (!localAudioUri) {
+        Alert.alert('Not Downloaded', 'Download the audiobook before playing.');
+        return;
+      }
+
+      // Load chapters if available, else fallback
+      let chapters = createFallbackChapter(book.totalDurationSeconds);
+      const chaptersUri = await getCachedPath(params.bookId, 'chapters', 'json');
+      if (chaptersUri) {
+        try {
+          const chaptersFile = new File(chaptersUri);
+          const json = await chaptersFile.text();
+          chapters = parseChaptersJson(json);
+        } catch {
+          // use fallback
+        }
+      }
+
+      const localBook: LocalBook = {
+        id: params.bookId,
+        title: book.title,
+        author: book.author,
+        coverUri: book.coverUrl ?? null,
+        epubPath: book.epubPath,
+        audioPath: book.audioPath,
+        syncMapPath: book.syncMapPath,
+        storageProvider: 'dropbox',
+        syncMode: book.syncMode,
+        totalChapters: book.totalChapters,
+        totalDurationSeconds: book.totalDurationSeconds,
+        addedAt: book.addedAt,
+        updatedAt: book.updatedAt,
+        localEpubUri: null,
+        localAudioUri,
+        isDownloaded: true,
+        downloadProgress: 1,
+      };
+
+      await startPlayback(localBook, chapters);
+      navigateRoot('Player', { bookId: params.bookId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Alert.alert('Error', `Failed to start playback: ${msg}`);
+    } finally {
+      setLoadingAudio(false);
+    }
   };
 
   if (loading) {
@@ -124,6 +201,18 @@ export default function BookDetailScreen() {
         <TouchableOpacity style={styles.primaryBtn} onPress={handleOpenReader} activeOpacity={0.85}>
           <Text style={styles.primaryBtnText}>Open Reader</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.secondaryBtn, loadingAudio && styles.btnDisabled]}
+          onPress={handlePlayAudio}
+          activeOpacity={0.85}
+          disabled={loadingAudio}
+        >
+          {loadingAudio ? (
+            <ActivityIndicator size="small" color="#1A1A2E" />
+          ) : (
+            <Text style={styles.secondaryBtnText}>Play Audio</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
       {/* Sync mode picker */}
@@ -167,6 +256,11 @@ export default function BookDetailScreen() {
         <FileRow label="Audio" path={book.audioPath} />
         {book.syncMapPath && <FileRow label="Sync map" path={book.syncMapPath} />}
       </View>
+
+      {/* Delete */}
+      <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
+        <Text style={styles.deleteBtnText}>Delete Book</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -216,7 +310,7 @@ const styles = StyleSheet.create({
   author: { fontSize: 16, color: '#555', marginTop: 6 },
   meta: { fontSize: 13, color: '#888', marginTop: 4 },
 
-  actions: { marginBottom: 28 },
+  actions: { marginBottom: 28, gap: 10 },
   primaryBtn: {
     backgroundColor: '#1A1A2E',
     borderRadius: 12,
@@ -224,6 +318,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  secondaryBtn: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#1A1A2E',
+  },
+  secondaryBtnText: { color: '#1A1A2E', fontSize: 16, fontWeight: '600' },
+  btnDisabled: { opacity: 0.6 },
 
   section: {
     backgroundColor: '#fff',
@@ -286,4 +390,11 @@ const styles = StyleSheet.create({
   },
   fileLabel: { fontSize: 13, fontWeight: '600', color: '#555', width: 56 },
   filePath: { flex: 1, fontSize: 13, color: '#888', textAlign: 'right' },
+
+  deleteBtn: {
+    alignItems: 'center',
+    paddingVertical: 14,
+    marginBottom: 16,
+  },
+  deleteBtnText: { color: '#C62828', fontSize: 15, fontWeight: '600' },
 });

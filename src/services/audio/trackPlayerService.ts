@@ -79,7 +79,12 @@ export async function seekToChapter(chapter: M4BChapter): Promise<void> {
 }
 
 export async function play(): Promise<void> {
-  await TrackPlayer.play();
+  try {
+    await TrackPlayer.play();
+  } catch (err) {
+    logger.error('TrackPlayer.play() failed', err);
+    throw err;
+  }
 }
 
 export async function pause(): Promise<void> {

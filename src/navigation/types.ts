@@ -3,6 +3,7 @@ import { NavigatorScreenParams } from '@react-navigation/native';
 export type RootStackParamList = {
   Auth: undefined;
   Main: NavigatorScreenParams<MainTabParamList>;
+  Player: { bookId: string };
 };
 
 export type AuthStackParamList = {
@@ -12,7 +13,6 @@ export type AuthStackParamList = {
 
 export type MainTabParamList = {
   Library: undefined;
-  Player: undefined;
   Settings: undefined;
 };
 

@@ -99,6 +99,15 @@ export async function writeBook(
     .set(book);
 }
 
+export async function deleteBook(userId: string, bookId: string): Promise<void> {
+  await firestore()
+    .collection('users')
+    .doc(userId)
+    .collection('books')
+    .doc(bookId)
+    .delete();
+}
+
 export async function listBooks(userId: string): Promise<Array<FirestoreBook & { id: string }>> {
   const snapshot = await firestore()
     .collection('users')

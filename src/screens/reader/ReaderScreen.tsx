@@ -20,6 +20,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
 import { readSyncState } from '@/services/firebase/firestoreService';
 import { getCachedPath } from '@/services/storage/localStorageService';
+import { File } from 'expo-file-system';
 import { EpubPosition } from '@/types/position';
 import { FirestorePosition } from '@/types/firebase';
 import { pushPosition } from '@/services/sync/syncEngine';
@@ -83,7 +84,10 @@ export default function ReaderScreen() {
         return;
       }
 
-      webViewRef.current?.loadBook(epubUri);
+      // Read epub as base64 and pass to WebView (file:// URIs don't work in WebView)
+      const epubFile = new File(epubUri);
+      const base64 = await epubFile.base64();
+      webViewRef.current?.loadBookBase64(base64);
 
       // Apply saved font size and theme
       webViewRef.current?.setFontSize(fontSize);

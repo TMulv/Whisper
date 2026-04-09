@@ -5,6 +5,9 @@
 export const JS_LOAD_BOOK = (urlOrBase64: string) =>
   `window.whisper.loadBook(${JSON.stringify(urlOrBase64)}); true;`;
 
+export const JS_LOAD_BOOK_BASE64 = (base64: string) =>
+  `window.whisper.loadBookFromBase64(${JSON.stringify(base64)}); true;`;
+
 export const JS_GO_TO_CFI = (cfi: string) =>
   `window.whisper.goTo(${JSON.stringify(cfi)}); true;`;
 

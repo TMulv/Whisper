@@ -5,6 +5,7 @@ import { RootStackParamList, AuthStackParamList } from './types';
 import MainTabNavigator from './MainTabNavigator';
 import SignInScreen from '@/screens/auth/SignInScreen';
 import SignUpScreen from '@/screens/auth/SignUpScreen';
+import PlayerScreen from '@/screens/player/PlayerScreen';
 import { useAuth } from '@/hooks/useAuth';
 
 const Root = createNativeStackNavigator<RootStackParamList>();
@@ -33,7 +34,14 @@ export default function RootNavigator() {
   return (
     <Root.Navigator screenOptions={{ headerShown: false }}>
       {user ? (
-        <Root.Screen name="Main" component={MainTabNavigator} />
+        <>
+          <Root.Screen name="Main" component={MainTabNavigator} />
+          <Root.Screen
+            name="Player"
+            component={PlayerScreen}
+            options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+          />
+        </>
       ) : (
         <Root.Screen name="Auth" component={AuthStack} />
       )}

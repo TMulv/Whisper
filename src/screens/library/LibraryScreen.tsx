@@ -18,7 +18,7 @@ import BookCard from '@/components/common/BookCard';
 import { LocalBook } from '@/types/book';
 import { writeBook } from '@/services/firebase/firestoreService';
 import type { LibraryStackParamList } from '@/navigation/types';
-import { v4 as uuidv4 } from 'uuid';
+import * as Crypto from 'expo-crypto';
 
 type NavProp = NativeStackNavigationProp<LibraryStackParamList, 'LibraryHome'>;
 
@@ -77,27 +77,31 @@ export default function LibraryScreen() {
             text: 'Pick Files',
             onPress: async () => {
               try {
-                const bookId = uuidv4();
+                const bookId = Crypto.randomUUID();
 
-                const epubUri = await pickEpub(bookId);
-                if (!epubUri) {
+                const epubResult = await pickEpub(bookId);
+                if (!epubResult) {
                   setAdding(false);
                   return;
                 }
 
-                const audioUri = await pickAudio(bookId);
-                if (!audioUri) {
+                const audioResult = await pickAudio(bookId);
+                if (!audioResult) {
                   setAdding(false);
                   return;
                 }
+
+                // Derive title from epub filename (strip extension)
+                const epubName = epubResult.name.replace(/\.epub$/i, '');
+                const title = epubName || 'Untitled Book';
 
                 const now = Date.now();
                 const newBook = {
-                  title: 'New Book',
-                  author: 'Unknown Author',
+                  title,
+                  author: '',
                   coverUrl: '',
-                  epubPath: epubUri,
-                  audioPath: audioUri,
+                  epubPath: epubResult.uri,
+                  audioPath: audioResult.uri,
                   syncMapPath: null,
                   totalChapters: 1,
                   totalDurationSeconds: 0,
@@ -109,7 +113,8 @@ export default function LibraryScreen() {
                 await writeBook(user.uid, bookId, newBook);
                 navigation.navigate('BookDetail', { bookId });
               } catch (err) {
-                Alert.alert('Error', 'Failed to add book. Please try again.');
+                const msg = err instanceof Error ? err.message : String(err);
+                Alert.alert('Error', `Failed to add book: ${msg}`);
               } finally {
                 setAdding(false);
               }

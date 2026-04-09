@@ -3,17 +3,22 @@ import * as DocumentPicker from 'expo-document-picker';
 import { cacheFile } from '@/services/storage/localStorageService';
 import { logger } from '@/utils/logger';
 
+export interface PickResult {
+  uri: string;
+  name: string;
+}
+
 interface UseFileStorageReturn {
-  pickEpub: (bookId: string) => Promise<string | null>;
-  pickAudio: (bookId: string) => Promise<string | null>;
+  pickEpub: (bookId: string) => Promise<PickResult | null>;
+  pickAudio: (bookId: string) => Promise<PickResult | null>;
 }
 
 export function useFileStorage(): UseFileStorageReturn {
-  const pickEpub = useCallback(async (bookId: string): Promise<string | null> => {
+  const pickEpub = useCallback(async (bookId: string): Promise<PickResult | null> => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/epub+zip',
-        copyToCacheDirectory: false,
+        copyToCacheDirectory: true,
       });
 
       if (result.canceled || !result.assets?.[0]) return null;
@@ -21,18 +26,18 @@ export function useFileStorage(): UseFileStorageReturn {
       const asset = result.assets[0];
       const extension = 'epub';
       const localUri = await cacheFile(asset.uri, bookId, 'epub', extension);
-      return localUri;
+      return { uri: localUri, name: asset.name ?? '' };
     } catch (err) {
       logger.error('pickEpub failed', err);
       return null;
     }
   }, []);
 
-  const pickAudio = useCallback(async (bookId: string): Promise<string | null> => {
+  const pickAudio = useCallback(async (bookId: string): Promise<PickResult | null> => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['audio/mp4', 'audio/mpeg', 'audio/x-m4b', 'audio/*'],
-        copyToCacheDirectory: false,
+        copyToCacheDirectory: true,
       });
 
       if (result.canceled || !result.assets?.[0]) return null;
@@ -41,7 +46,7 @@ export function useFileStorage(): UseFileStorageReturn {
       const name = asset.name ?? '';
       const extension = name.split('.').pop() ?? 'mp3';
       const localUri = await cacheFile(asset.uri, bookId, 'audio', extension);
-      return localUri;
+      return { uri: localUri, name };
     } catch (err) {
       logger.error('pickAudio failed', err);
       return null;

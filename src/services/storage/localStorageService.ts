@@ -22,7 +22,9 @@ function buildCacheFile(bookId: string, type: FileType, extension: string): File
 
 export async function ensureCacheDir(): Promise<void> {
   const dir = getCacheDir();
-  dir.create({ intermediates: true });
+  if (!dir.exists) {
+    dir.create({ intermediates: true });
+  }
 }
 
 async function getCacheMeta(): Promise<CacheMeta> {
@@ -43,18 +45,25 @@ export async function cacheFile(
   await ensureCacheDir();
   const destFile = buildCacheFile(bookId, type, extension);
 
-  const downloaded = await File.downloadFileAsync(sourceUri, destFile);
+  // Remove stale file from a previous attempt
+  if (destFile.exists) {
+    destFile.delete();
+  }
+
+  // Copy from the picked file (file:// URI) to our cache
+  const sourceFile = new File(sourceUri);
+  sourceFile.copy(destFile);
 
   const meta = await getCacheMeta();
-  meta[downloaded.uri] = {
+  meta[destFile.uri] = {
     bookId,
     type,
     lastAccessedAt: Date.now(),
-    sizeBytes: downloaded.size ?? 0,
+    sizeBytes: destFile.size ?? 0,
   };
   await setCacheMeta(meta);
 
-  return downloaded.uri;
+  return destFile.uri;
 }
 
 export async function getCachedPath(bookId: string, type: FileType, extension: string): Promise<string | null> {

@@ -3,19 +3,18 @@ import React, {
   useImperativeHandle,
   useRef,
   useCallback,
-  useEffect,
 } from 'react';
-import { StyleSheet, Platform } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
-import { Asset } from 'expo-asset';
-import { File } from 'expo-file-system';
 import {
   JS_LOAD_BOOK,
+  JS_LOAD_BOOK_BASE64,
   JS_GO_TO_CFI,
   JS_GO_TO_CHAPTER,
   JS_SET_FONT_SIZE,
   JS_SET_THEME,
 } from '@/constants/epubInjection';
+import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
 import { logger } from '@/utils/logger';
 
@@ -31,6 +30,7 @@ export interface EpubChapter {
 
 export interface EpubWebViewRef {
   loadBook: (localUri: string) => void;
+  loadBookBase64: (base64: string) => void;
   goTo: (cfi: string) => void;
   goToChapter: (index: number) => void;
   setFontSize: (px: number) => void;
@@ -64,21 +64,6 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
   const bridgeReadyRef = useRef(false);
   const pendingCommandsRef = useRef<string[]>([]);
 
-  // Resolve the bundled html asset URI once on mount
-  const [bridgeUri, setBridgeUri] = React.useState<string | null>(null);
-
-  useEffect(() => {
-    Asset.fromModule(require('../../../assets/epub-bridge/epub-bridge.html'))
-      .downloadAsync()
-      .then((asset: { localUri: string | null; uri: string }) => {
-        setBridgeUri(asset.localUri ?? asset.uri);
-      })
-      .catch((err: unknown) => {
-        logger.error('Failed to load epub-bridge asset', err);
-        onError?.('Failed to load reader.');
-      });
-  }, []);
-
   // ── Inject JS helper ──────────────────────────────────────────────────────
   const inject = useCallback((js: string) => {
     if (!bridgeReadyRef.current) {
@@ -97,8 +82,10 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
   // ── Imperative API ────────────────────────────────────────────────────────
   useImperativeHandle(ref, () => ({
     loadBook: (localUri: string) => {
-      // We pass the URI directly; the bridge receives it and calls ePub(url)
       inject(JS_LOAD_BOOK(localUri));
+    },
+    loadBookBase64: (base64: string) => {
+      inject(JS_LOAD_BOOK_BASE64(base64));
     },
     goTo: (cfi: string) => inject(JS_GO_TO_CFI(cfi)),
     goToChapter: (index: number) => inject(JS_GO_TO_CHAPTER(index)),
@@ -121,10 +108,10 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
         case 'BRIDGE_LOADED':
           bridgeReadyRef.current = true;
           flushPending();
+          onReady?.();
           break;
 
         case 'READY':
-          onReady?.();
           break;
 
         case 'POSITION_CHANGE':
@@ -153,30 +140,25 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     [onReady, onPositionChange, onChapterList, onError, flushPending],
   );
 
-  if (!bridgeUri) return null;
-
   return (
     <WebView
       ref={webViewRef}
       style={styles.webview}
-      source={{ uri: bridgeUri }}
+      source={{ html: EPUB_BRIDGE_HTML, baseUrl: 'file:///' }}
       originWhitelist={['*']}
       allowFileAccess
       allowUniversalAccessFromFileURLs
       allowFileAccessFromFileURLs
       javaScriptEnabled
       domStorageEnabled
-      // Allow loading local epub files by URL
       mixedContentMode="always"
       onMessage={handleMessage}
       onError={(e) => {
         logger.error('WebView error', e.nativeEvent);
         onError?.(e.nativeEvent.description ?? 'WebView crashed');
       }}
-      // Disable bounce on iOS (epub paginates internally)
       scrollEnabled={false}
       bounces={false}
-      // Performance
       renderToHardwareTextureAndroid
     />
   );

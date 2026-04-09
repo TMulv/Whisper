@@ -1,12 +1,15 @@
 import React from 'react';
+import { View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { BottomTabBar, BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MainTabParamList, LibraryStackParamList } from './types';
 import LibraryScreen from '@/screens/library/LibraryScreen';
 import BookDetailScreen from '@/screens/library/BookDetailScreen';
 import ReaderScreen from '@/screens/reader/ReaderScreen';
-import PlayerScreen from '@/screens/player/PlayerScreen';
 import SettingsScreen from '@/screens/settings/SettingsScreen';
+import MiniPlayer from '@/components/player/MiniPlayer';
+import { useNowPlaying } from '@/context/NowPlayingContext';
 
 // ── Library stack (Library → BookDetail → Reader) ────────────────────────────
 
@@ -34,6 +37,18 @@ function LibraryNavigator() {
   );
 }
 
+// ── Custom tab bar with floating MiniPlayer ──────────────────────────────────
+
+function CustomTabBar(props: BottomTabBarProps) {
+  const { book } = useNowPlaying();
+  return (
+    <View>
+      {book && <MiniPlayer />}
+      <BottomTabBar {...props} />
+    </View>
+  );
+}
+
 // ── Main tab navigator ───────────────────────────────────────────────────────
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -41,6 +56,7 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 export default function MainTabNavigator() {
   return (
     <Tab.Navigator
+      tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: '#1A1A2E',
@@ -52,11 +68,6 @@ export default function MainTabNavigator() {
         name="Library"
         component={LibraryNavigator}
         options={{ title: 'Library' }}
-      />
-      <Tab.Screen
-        name="Player"
-        component={PlayerScreen}
-        options={{ title: 'Player', headerShown: true }}
       />
       <Tab.Screen
         name="Settings"
