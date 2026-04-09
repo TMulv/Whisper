@@ -50,7 +50,7 @@ export default function SignInScreen() {
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.appName}>Whisper</Text>
-        <Text style={styles.tagline}>Read and listen — seamlessly.</Text>
+        <Text style={styles.tagline}>Your Eyes or Ears</Text>
 
         <View style={styles.form}>
           {errorMsg ? <Text style={styles.error}>{errorMsg}</Text> : null}

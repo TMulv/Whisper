@@ -18,6 +18,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     supportsTablet: true,
     bundleIdentifier: 'com.whisper.app',
+    googleServicesFile: './GoogleService-Info.plist',
     infoPlist: {
       UIBackgroundModes: ['audio', 'fetch'],
       NSDocumentsFolderUsageDescription:

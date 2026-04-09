@@ -17,7 +17,7 @@ export function useFileStorage(): UseFileStorageReturn {
   const pickEpub = useCallback(async (bookId: string): Promise<PickResult | null> => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/epub+zip',
+        type: ['application/epub+zip', 'application/octet-stream', '*/*'],
         copyToCacheDirectory: true,
       });
 
