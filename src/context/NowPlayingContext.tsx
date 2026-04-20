@@ -13,6 +13,7 @@ interface NowPlayingContextValue extends NowPlayingState {
   startPlayback: (book: LocalBook, chapters: M4BChapter[], startTimestamp?: number) => Promise<void>;
   clearNowPlaying: () => Promise<void>;
   setChapters: (chapters: M4BChapter[]) => void;
+  updateBookCover: (bookId: string, coverUri: string) => void;
 }
 
 const NowPlayingContext = createContext<NowPlayingContextValue>({
@@ -21,6 +22,7 @@ const NowPlayingContext = createContext<NowPlayingContextValue>({
   startPlayback: async () => {},
   clearNowPlaying: async () => {},
   setChapters: () => {},
+  updateBookCover: () => {},
 });
 
 export function NowPlayingProvider({ children }: { children: React.ReactNode }) {
@@ -50,8 +52,12 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
     setChapters([]);
   }, []);
 
+  const updateBookCover = useCallback((bookId: string, coverUri: string) => {
+    setBook((prev) => (prev?.id === bookId ? { ...prev, coverUri } : prev));
+  }, []);
+
   return (
-    <NowPlayingContext.Provider value={{ book, chapters, startPlayback, clearNowPlaying, setChapters }}>
+    <NowPlayingContext.Provider value={{ book, chapters, startPlayback, clearNowPlaying, setChapters, updateBookCover }}>
       {children}
     </NowPlayingContext.Provider>
   );

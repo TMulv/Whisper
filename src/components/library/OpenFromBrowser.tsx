@@ -9,6 +9,7 @@ import {
   Pressable,
   ActivityIndicator,
   LayoutChangeEvent,
+  Alert,
 } from 'react-native';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -16,6 +17,7 @@ import {
   getRecentPicks,
   listCachedFiles,
   classifyName,
+  clearRecentPicks,
   type RecentPick,
   type CachedFile,
   type PickKind,
@@ -102,6 +104,37 @@ function formatWhen(ts: number): string {
 
 function stripExt(name: string): string {
   return name.replace(/\.[^.]+$/, '');
+}
+
+function normalizeStem(name: string): string {
+  return stripExt(name)
+    .toLowerCase()
+    .replace(/[\s_\-.()\[\]]+/g, ' ')
+    .trim();
+}
+
+interface PartnerCandidate {
+  uri: string;
+  name: string;
+  kind: PickKind;
+}
+
+function findPartner(
+  selectedName: string,
+  partnerKind: PickKind,
+  candidates: PartnerCandidate[],
+): { uri: string; name: string } | null {
+  const target = normalizeStem(selectedName);
+  if (!target) return null;
+  const pool = candidates.filter((c) => c.kind === partnerKind);
+  const exact = pool.find((c) => normalizeStem(c.name) === target);
+  if (exact) return { uri: exact.uri, name: exact.name };
+  const contained = pool.find((c) => {
+    const n = normalizeStem(c.name);
+    return n.length >= 4 && target.length >= 4 && (n.includes(target) || target.includes(n));
+  });
+  if (contained) return { uri: contained.uri, name: contained.name };
+  return null;
 }
 
 // ── Selection slot card ───────────────────────────────────────────────────────
@@ -385,13 +418,33 @@ function EmptyPanel({
 
 // ── Section heading ───────────────────────────────────────────────────────────
 
-function Heading({ eyebrow, title }: { eyebrow?: string; title: string }) {
+function Heading({
+  eyebrow,
+  title,
+  actionLabel,
+  onAction,
+}: {
+  eyebrow?: string;
+  title: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
   return (
     <View style={styles.heading}>
       {eyebrow ? <Text style={styles.headingEyebrow}>{eyebrow}</Text> : null}
       <View style={styles.headingRow}>
         <Text style={styles.headingTitle}>{title}</Text>
         <View style={styles.headingRule} />
+        {actionLabel && onAction ? (
+          <TouchableOpacity
+            onPress={onAction}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.headingAction}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.headingActionText}>{actionLabel}</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -463,12 +516,22 @@ export default function OpenFromBrowser({
     };
   }, [loadRecents, loadCached]);
 
-  // Map cache URI → original filename using recent picks (cached files use UUID-based names).
+  // Map cache URI → original filename. Cached files are named by UUID on disk; the
+  // readable name comes from (1) recent picks, or (2) the paired book in the library.
   const nameByUri = useMemo(() => {
     const map = new Map<string, string>();
+    for (const b of recentBooks) {
+      const title = b.title || 'Untitled';
+      if (b.epubPath) map.set(b.epubPath, `${title}.epub`);
+      if (b.audioPath) {
+        const ext = b.audioPath.split('.').pop() || 'audio';
+        map.set(b.audioPath, `${title}.${ext}`);
+      }
+    }
+    // Recent picks win over library lookups — they hold the user's actual filename.
     for (const r of recents) map.set(r.uri, r.name);
     return map;
-  }, [recents]);
+  }, [recents, recentBooks]);
 
   // Recent-book-paired files (EPUB + audio pairs) for the Recents tab.
   const recentBookFiles = useMemo(() => {
@@ -497,36 +560,91 @@ export default function OpenFromBrowser({
     return items;
   }, [recentBooks]);
 
+  const partnerCandidates = useMemo<PartnerCandidate[]>(() => {
+    const byUri = new Map<string, PartnerCandidate>();
+    for (const r of recents) {
+      if (r.kind === 'other') continue;
+      byUri.set(r.uri, { uri: r.uri, name: r.name, kind: r.kind });
+    }
+    for (const c of cached) {
+      if (c.kind === 'other') continue;
+      if (!byUri.has(c.uri)) {
+        byUri.set(c.uri, { uri: c.uri, name: nameByUri.get(c.uri) ?? c.name, kind: c.kind });
+      }
+    }
+    return Array.from(byUri.values());
+  }, [recents, cached, nameByUri]);
+
+  const selectEpubWithMatch = useCallback(
+    (sel: Selection) => {
+      onSelectEpub(sel);
+      if (!audio) {
+        const partner = findPartner(sel.name, 'audio', partnerCandidates);
+        if (partner) onSelectAudio(partner);
+      }
+    },
+    [onSelectEpub, onSelectAudio, audio, partnerCandidates],
+  );
+
+  const selectAudioWithMatch = useCallback(
+    (sel: Selection) => {
+      onSelectAudio(sel);
+      if (!epub) {
+        const partner = findPartner(sel.name, 'epub', partnerCandidates);
+        if (partner) onSelectEpub(partner);
+      }
+    },
+    [onSelectEpub, onSelectAudio, epub, partnerCandidates],
+  );
+
   const handleSelectFile = useCallback(
     (uri: string, name: string, forcedKind?: PickKind) => {
       const kind = forcedKind ?? classifyName(name);
       if (kind === 'epub') {
         if (epub?.uri === uri) onClearEpub();
-        else onSelectEpub({ uri, name });
+        else selectEpubWithMatch({ uri, name });
       } else if (kind === 'audio') {
         if (audio?.uri === uri) onClearAudio();
-        else onSelectAudio({ uri, name });
+        else selectAudioWithMatch({ uri, name });
       }
     },
-    [epub, audio, onSelectEpub, onSelectAudio, onClearEpub, onClearAudio],
+    [epub, audio, onClearEpub, onClearAudio, selectEpubWithMatch, selectAudioWithMatch],
   );
+
+  const handleClearRecents = useCallback(() => {
+    Alert.alert(
+      'Clear recent picks?',
+      'This removes the list of recently opened files. The files themselves stay where they are.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearRecentPicks();
+            setRecents([]);
+          },
+        },
+      ],
+    );
+  }, []);
 
   const handleBrowseDevice = useCallback(async () => {
     // Alternates between picking whichever slot is still empty, audio first if EPUB done.
     if (!epub) {
       const r = await onPickEpubDevice();
-      if (r) onSelectEpub(r);
+      if (r) selectEpubWithMatch(r);
       loadRecents();
       loadCached();
       return;
     }
     if (!audio) {
       const r = await onPickAudioDevice();
-      if (r) onSelectAudio(r);
+      if (r) selectAudioWithMatch(r);
       loadRecents();
       loadCached();
     }
-  }, [epub, audio, onPickEpubDevice, onPickAudioDevice, onSelectEpub, onSelectAudio, loadRecents, loadCached]);
+  }, [epub, audio, onPickEpubDevice, onPickAudioDevice, selectEpubWithMatch, selectAudioWithMatch, loadRecents, loadCached]);
 
   const counts: Record<TabKey, number | null> = {
     recents: recents.length + recentBookFiles.length,
@@ -552,24 +670,39 @@ export default function OpenFromBrowser({
     }
 
     if (tab === 'recents') {
-      const items = [
-        ...recents.map((r) => ({
+      const seen = new Set<string>();
+      const items: Array<{
+        uri: string;
+        name: string;
+        kind: PickKind;
+        size?: number;
+        when: number;
+        sub: string;
+      }> = [];
+      for (const r of recents) {
+        if (seen.has(r.uri)) continue;
+        seen.add(r.uri);
+        items.push({
           uri: r.uri,
           name: r.name,
           kind: r.kind,
           size: r.sizeBytes,
           when: r.pickedAt,
           sub: 'Recent pick',
-        })),
-        ...recentBookFiles.map((r) => ({
+        });
+      }
+      for (const r of recentBookFiles) {
+        if (seen.has(r.uri)) continue;
+        seen.add(r.uri);
+        items.push({
           uri: r.uri,
           name: r.name,
           kind: r.kind,
           size: undefined,
           when: r.when,
           sub: r.via,
-        })),
-      ];
+        });
+      }
 
       if (items.length === 0) {
         return (
@@ -583,9 +716,15 @@ export default function OpenFromBrowser({
         );
       }
 
+      const canClear = recents.length > 0;
       return (
         <View style={styles.tabContent}>
-          <Heading eyebrow="Recently opened" title="Quick picks" />
+          <Heading
+            eyebrow="Recently opened"
+            title="Quick picks"
+            actionLabel={canClear ? 'Clear' : undefined}
+            onAction={canClear ? handleClearRecents : undefined}
+          />
           {items.map((f, i) => (
             <FileRow
               key={`${f.uri}-${i}`}
@@ -595,7 +734,7 @@ export default function OpenFromBrowser({
               whenTs={f.when}
               subLabel={f.sub}
               active={selectedUris.has(f.uri)}
-              onPress={() => handleSelectFile(f.uri, f.name)}
+              onPress={() => handleSelectFile(f.uri, f.name, f.kind)}
             />
           ))}
         </View>
@@ -671,18 +810,26 @@ export default function OpenFromBrowser({
               style={[styles.docCard, epub && styles.docCardFilled]}
               onPress={async () => {
                 const r = await onPickEpubDevice();
-                if (r) onSelectEpub(r);
+                if (r) selectEpubWithMatch(r);
                 loadRecents();
                 loadCached();
               }}
             >
-              <View style={[styles.docMedallion, { borderColor: '#4A78C4' }]}>
-                <Text style={styles.docMedallionGlyph}>📖</Text>
+              <View style={styles.docCardTop}>
+                <View style={[styles.docMedallion, { borderColor: '#4A78C4' }]}>
+                  <Text style={styles.docMedallionGlyph}>📖</Text>
+                </View>
+                <View style={[styles.docTypePill, { borderColor: '#4A78C4' + '55' }]}>
+                  <Text style={[styles.docTypePillText, { color: '#4A78C4' }]}>EPUB</Text>
+                </View>
               </View>
-              <Text style={[styles.docCardKind, { color: '#4A78C4' }]}>EPUB</Text>
-              <Text style={styles.docCardTitle} numberOfLines={2}>
-                {epub ? stripExt(epub.name) : 'Choose ebook'}
-              </Text>
+              {epub ? (
+                <Text style={styles.docCardTitle} numberOfLines={3}>
+                  {stripExt(epub.name) || 'Ebook selected'}
+                </Text>
+              ) : (
+                <Text style={styles.docCardPlaceholder}>Choose ebook</Text>
+              )}
               <Text style={styles.docCardHint}>
                 {epub ? 'Tap to change' : 'Open Files app'}
               </Text>
@@ -691,18 +838,26 @@ export default function OpenFromBrowser({
               style={[styles.docCard, audio && styles.docCardFilled]}
               onPress={async () => {
                 const r = await onPickAudioDevice();
-                if (r) onSelectAudio(r);
+                if (r) selectAudioWithMatch(r);
                 loadRecents();
                 loadCached();
               }}
             >
-              <View style={[styles.docMedallion, { borderColor: '#7AB097' }]}>
-                <Text style={styles.docMedallionGlyph}>🎧</Text>
+              <View style={styles.docCardTop}>
+                <View style={[styles.docMedallion, { borderColor: '#7AB097' }]}>
+                  <Text style={styles.docMedallionGlyph}>🎧</Text>
+                </View>
+                <View style={[styles.docTypePill, { borderColor: '#7AB097' + '55' }]}>
+                  <Text style={[styles.docTypePillText, { color: '#7AB097' }]}>AUDIO</Text>
+                </View>
               </View>
-              <Text style={[styles.docCardKind, { color: '#7AB097' }]}>AUDIO</Text>
-              <Text style={styles.docCardTitle} numberOfLines={2}>
-                {audio ? stripExt(audio.name) : 'Choose audio'}
-              </Text>
+              {audio ? (
+                <Text style={styles.docCardTitle} numberOfLines={3}>
+                  {stripExt(audio.name) || 'Audio selected'}
+                </Text>
+              ) : (
+                <Text style={styles.docCardPlaceholder}>Choose audio</Text>
+              )}
               <Text style={styles.docCardHint}>
                 {audio ? 'Tap to change' : 'Open Files app'}
               </Text>
@@ -1023,6 +1178,20 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: C.rail,
   },
+  headingAction: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: C.brassDim,
+    borderRadius: 12,
+  },
+  headingActionText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: C.brass,
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+  },
 
   // File row
   fileRow: {
@@ -1190,29 +1359,48 @@ const styles = StyleSheet.create({
     borderColor: C.brassDim,
     backgroundColor: C.chamber,
   },
+  docCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
   docMedallion: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 14,
   },
-  docMedallionGlyph: { fontSize: 18 },
-  docCardKind: {
+  docMedallionGlyph: { fontSize: 17 },
+  docTypePill: {
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  docTypePillText: {
     fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 2,
-    marginBottom: 6,
+    letterSpacing: 1.8,
   },
   docCardTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
     color: C.parchment,
-    letterSpacing: -0.2,
-    lineHeight: 18,
+    letterSpacing: -0.3,
+    lineHeight: 20,
     marginBottom: 8,
+    flex: 1,
+  },
+  docCardPlaceholder: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: C.muted,
+    letterSpacing: -0.1,
+    marginBottom: 8,
+    flex: 1,
   },
   docCardHint: {
     fontSize: 11,

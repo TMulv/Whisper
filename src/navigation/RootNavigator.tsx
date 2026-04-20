@@ -27,7 +27,13 @@ export default function RootNavigator() {
   if (loading) {
     return (
       <View style={styles.loading}>
-        <AnimatedLoader variant="book" color="#C9A96E" size={72} message="Opening your library" />
+        <AnimatedLoader
+          variant="random"
+          color="#C9A96E"
+          accent="#F0E6D4"
+          size={72}
+          message="Opening your library"
+        />
       </View>
     );
   }

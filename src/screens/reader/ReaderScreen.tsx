@@ -15,14 +15,23 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import EpubWebView, { EpubWebViewRef, EpubChapter, EpubTheme } from '@/components/reader/EpubWebView';
 import SyncBanner from '@/components/reader/SyncBanner';
-import ReaderControls from '@/components/reader/ReaderControls';
+import ReaderControls, {
+  ReaderFontFamily,
+  ReaderMargin,
+  FONT_FAMILY_VALUES,
+  MARGIN_VALUES,
+} from '@/components/reader/ReaderControls';
+import WordLookupModal from '@/components/reader/WordLookupModal';
 import ImmersionBar from '@/components/reader/ImmersionBar';
+import AIInsightsModal from '@/components/ai/AIInsightsModal';
 import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
 import { useImmersionReading } from '@/hooks/useImmersionReading';
 import { useNowPlaying } from '@/context/NowPlayingContext';
-import { readSyncState } from '@/services/firebase/firestoreService';
+import { readSyncState, deleteBook } from '@/services/firebase/firestoreService';
+import { localDeleteBook, localListBooks } from '@/services/book/localBookStore';
 import { getCachedPath } from '@/services/storage/localStorageService';
+import { File } from 'expo-file-system';
 import { EpubPosition } from '@/types/position';
 import { FirestorePosition } from '@/types/firebase';
 import { pushPosition } from '@/services/sync/syncEngine';
@@ -34,6 +43,9 @@ type Props = NativeStackScreenProps<LibraryStackParamList, 'Reader'>;
 
 const DEVICE_ID_KEY = '@whisper/device_id';
 const FONT_SIZE_KEY = '@whisper/font_size';
+const FONT_FAMILY_KEY = '@whisper/font_family';
+const MARGIN_KEY = '@whisper/margin';
+const THEME_KEY = '@whisper/theme';
 
 async function getOrCreateDeviceId(): Promise<string> {
   let id = await AsyncStorage.getItem(DEVICE_ID_KEY);
@@ -58,12 +70,17 @@ export default function ReaderScreen() {
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [fontSize, setFontSize] = useState(16);
   const [theme, setTheme] = useState<EpubTheme>('light');
+  const [fontFamily, setFontFamily] = useState<ReaderFontFamily>('serif');
+  const [margin, setMargin] = useState<ReaderMargin>('normal');
+  const [lookupWordValue, setLookupWordValue] = useState<string | null>(null);
   const [controlsVisible, setControlsVisible] = useState(false);
   const [syncBannerData, setSyncBannerData] = useState<FirestorePosition | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState('');
   const [immersionActive, setImmersionActive] = useState(false);
   const [immersionRate, setImmersionRate] = useState(1.0);
+  const [aiVisible, setAiVisible] = useState(false);
+  const [bookMeta, setBookMeta] = useState<{ title: string; author: string } | null>(null);
 
   const { chapters: audioChapters } = useNowPlaying();
   const hasAudio = audioChapters.length > 0;
@@ -78,11 +95,31 @@ export default function ReaderScreen() {
   const readyRef = useRef(false);
   const { onPositionChange, loadLocalPosition } = useEpubPosition(params.bookId, user?.uid ?? null);
 
+  // ── Load book metadata (title/author) for AI context ───────────────────────
+  useEffect(() => {
+    if (!user) return;
+    localListBooks(user.uid).then((books) => {
+      const found = books.find((b) => b.id === params.bookId);
+      if (found) setBookMeta({ title: found.title, author: found.author ?? '' });
+    });
+  }, [user, params.bookId]);
+
   // ── Mount: load device ID, persisted font size, initial position ───────────
   useEffect(() => {
     getOrCreateDeviceId().then(setDeviceId);
     AsyncStorage.getItem(FONT_SIZE_KEY).then((v) => {
       if (v) setFontSize(parseInt(v, 10));
+    });
+    AsyncStorage.getItem(FONT_FAMILY_KEY).then((v) => {
+      if (v === 'serif' || v === 'sans' || v === 'palatino' || v === 'mono') {
+        setFontFamily(v);
+      }
+    });
+    AsyncStorage.getItem(MARGIN_KEY).then((v) => {
+      if (v === 'narrow' || v === 'normal' || v === 'wide') setMargin(v);
+    });
+    AsyncStorage.getItem(THEME_KEY).then((v) => {
+      if (v === 'light' || v === 'dark' || v === 'sepia' || v === 'eink') setTheme(v);
     });
 
     // Safety net: if the WebView bridge never fires BRIDGE_LOADED, surface an error
@@ -104,10 +141,40 @@ export default function ReaderScreen() {
         logger.info('ReaderScreen: bridge ready, loading epub', { bookId: params.bookId });
         const epubUri = await getCachedPath(params.bookId, 'epub', 'epub');
         if (!epubUri) {
-          logger.warn('ReaderScreen: epub not cached', { bookId: params.bookId });
-          setErrorMsg('EPUB file not found locally. Please download the book first.');
+          logger.warn('ReaderScreen: epub not cached, self-healing', { bookId: params.bookId });
+          try {
+            await localDeleteBook(user.uid, params.bookId);
+          } catch (err) {
+            logger.warn('ReaderScreen: localDeleteBook during self-heal failed', err);
+          }
+          deleteBook(user.uid, params.bookId).catch(() => {});
+          setErrorMsg('This book is missing its EPUB file and has been removed from your library. Please re-add it.');
           setLoading(false);
+          setTimeout(() => {
+            if (navigation.canGoBack()) navigation.goBack();
+          }, 1500);
           return;
+        }
+
+        // Sanity-check size before handing off to the WebView. A valid EPUB
+        // is a small ZIP (typically < 50 MB); anything above ~200 MB is almost
+        // certainly a mispaired audio file and will OOM the WebView.
+        const MAX_EPUB_BYTES = 200 * 1024 * 1024;
+        try {
+          const size = new File(epubUri).size ?? 0;
+          if (size > MAX_EPUB_BYTES) {
+            logger.error('ReaderScreen: epub file too large, likely mispaired', {
+              bookId: params.bookId,
+              size,
+            });
+            setErrorMsg(
+              `This book's ebook file is ${Math.round(size / (1024 * 1024))} MB — too large to be a valid .epub. It may have been paired with the wrong file. Remove it and re-add with the correct .epub.`,
+            );
+            setLoading(false);
+            return;
+          }
+        } catch (err) {
+          logger.warn('ReaderScreen: could not stat epub file', err);
         }
 
         logger.info('ReaderScreen: handing epub uri to WebView', { uri: epubUri });
@@ -115,6 +182,8 @@ export default function ReaderScreen() {
 
         webViewRef.current?.setFontSize(fontSize);
         webViewRef.current?.setTheme(theme);
+        webViewRef.current?.setFontFamily(FONT_FAMILY_VALUES[fontFamily]);
+        webViewRef.current?.setMargin(MARGIN_VALUES[margin]);
 
         const saved = await loadLocalPosition();
         if (saved && !params.resumeFromAudio) {
@@ -182,6 +251,19 @@ export default function ReaderScreen() {
   const handleThemeChange = useCallback((t: EpubTheme) => {
     setTheme(t);
     webViewRef.current?.setTheme(t);
+    AsyncStorage.setItem(THEME_KEY, t);
+  }, []);
+
+  const handleFontFamilyChange = useCallback((f: ReaderFontFamily) => {
+    setFontFamily(f);
+    webViewRef.current?.setFontFamily(FONT_FAMILY_VALUES[f]);
+    AsyncStorage.setItem(FONT_FAMILY_KEY, f);
+  }, []);
+
+  const handleMarginChange = useCallback((m: ReaderMargin) => {
+    setMargin(m);
+    webViewRef.current?.setMargin(MARGIN_VALUES[m]);
+    AsyncStorage.setItem(MARGIN_KEY, m);
   }, []);
 
   const handleChapterSelect = useCallback((index: number) => {
@@ -212,6 +294,7 @@ export default function ReaderScreen() {
         onReady={() => { readyRef.current = true; setReady(true); }}
         onPositionChange={handlePositionChange}
         onChapterList={setChapters}
+        onWordLookup={setLookupWordValue}
         onError={setErrorMsg}
       />
 
@@ -219,8 +302,9 @@ export default function ReaderScreen() {
       {loading && (
         <View style={styles.loadingOverlay}>
           <AnimatedLoader
-            variant="book"
-            color={theme === 'dark' ? '#C9A96E' : '#1A1A2E'}
+            variant="random"
+            color={theme === 'dark' ? '#C9A96E' : '#1A2438'}
+            accent={theme === 'dark' ? '#F0E6D4' : '#E8DFC8'}
             size={72}
             message="Turning to your page"
           />
@@ -275,8 +359,12 @@ export default function ReaderScreen() {
               currentChapterIndex={currentChapterIndex}
               fontSize={fontSize}
               theme={theme}
+              fontFamily={fontFamily}
+              margin={margin}
               onFontSizeChange={handleFontSizeChange}
               onThemeChange={handleThemeChange}
+              onFontFamilyChange={handleFontFamilyChange}
+              onMarginChange={handleMarginChange}
               onChapterSelect={handleChapterSelect}
               onClose={() => setControlsVisible(false)}
             />
@@ -295,18 +383,58 @@ export default function ReaderScreen() {
         </View>
       </TouchableOpacity>
 
-      {/* Immersion toggle (top-right) — only shown when audio is loaded */}
-      {hasAudio && (
+      {/* Top-right action buttons stack: AI + (optional) immersion */}
+      <View style={[styles.topRightStack, { top: insets.top + 8 }]}>
         <TouchableOpacity
-          style={[styles.immersionIcon, { top: insets.top + 8 }]}
-          onPress={() => setImmersionActive((v) => !v)}
+          style={styles.topRightBtn}
+          onPress={() => setAiVisible(true)}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <View style={[styles.backIconBubble, immersionActive && styles.immersionIconActive]}>
-            <Text style={styles.backIconText}>{immersionActive ? '🎧' : '🎧'}</Text>
+          <View style={styles.backIconBubble}>
+            <Text style={styles.aiIconText}>✨</Text>
           </View>
         </TouchableOpacity>
-      )}
+        {hasAudio && (
+          <TouchableOpacity
+            style={styles.topRightBtn}
+            onPress={() => setImmersionActive((v) => !v)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <View style={[styles.backIconBubble, immersionActive && styles.immersionIconActive]}>
+              <Text style={styles.backIconText}>🎧</Text>
+            </View>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* AI insights modal */}
+      <AIInsightsModal
+        visible={aiVisible}
+        onClose={() => setAiVisible(false)}
+        chapterContext={{
+          bookTitle: bookMeta?.title ?? 'This book',
+          author: bookMeta?.author ?? '',
+          chapterTitle: chapters[currentChapterIndex]?.title ?? '',
+          chapterIndex: currentChapterIndex,
+          totalChapters: chapters.length || 1,
+        }}
+        loadChapterText={async () => {
+          try {
+            const text = await webViewRef.current?.getChapterText(currentChapterIndex);
+            return text && text.length > 0 ? text : null;
+          } catch (err) {
+            logger.warn('ReaderScreen: getChapterText failed', err);
+            return null;
+          }
+        }}
+        onOpenSettings={() => {
+          (navigation as any).navigate('Main', { screen: 'Settings' });
+        }}
+      />
+
+
+      {/* Word lookup modal */}
+      <WordLookupModal word={lookupWordValue} onClose={() => setLookupWordValue(null)} />
 
       {/* Immersion bar — fixed at bottom when active */}
       {immersionActive && (
@@ -392,12 +520,16 @@ const styles = StyleSheet.create({
     marginLeft: -2,
   },
 
-  // Immersion mode toggle
-  immersionIcon: {
+  // Top-right action stack (AI, immersion)
+  topRightStack: {
     position: 'absolute',
     right: 12,
+    flexDirection: 'row',
+    gap: 8,
     zIndex: 30,
   },
+  topRightBtn: {},
+  aiIconText: { fontSize: 18, lineHeight: 22 },
   immersionIconActive: {
     backgroundColor: 'rgba(26,26,46,0.85)',
   },

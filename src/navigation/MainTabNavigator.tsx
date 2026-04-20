@@ -1,7 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Pressable, StyleSheet, Platform } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { BottomTabBar, BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import { BottomTabBar, BottomTabBarProps, BottomTabBarButtonProps } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MainTabParamList, LibraryStackParamList } from './types';
 import LibraryScreen from '@/screens/library/LibraryScreen';
@@ -11,6 +11,7 @@ import SettingsScreen from '@/screens/settings/SettingsScreen';
 import FilesScreen from '@/screens/files/FilesScreen';
 import MiniPlayer from '@/components/player/MiniPlayer';
 import { useNowPlaying } from '@/context/NowPlayingContext';
+import { LibraryIcon, FilesIcon, SettingsIcon } from '@/components/navigation/TabIcons';
 
 // ── Library stack (Library → BookDetail → Reader) ────────────────────────────
 
@@ -45,6 +46,7 @@ function CustomTabBar(props: BottomTabBarProps) {
   return (
     <View>
       {book && <MiniPlayer />}
+      <View style={styles.barTopAccent} />
       <BottomTabBar {...props} />
     </View>
   );
@@ -54,6 +56,31 @@ function CustomTabBar(props: BottomTabBarProps) {
 
 function AddTabPlaceholder() {
   return null;
+}
+
+// ── Raised Pair FAB — sits in the visual center, above the tab bar ───────────
+
+function PairFab({ onPress, onLongPress, accessibilityState }: BottomTabBarButtonProps) {
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      accessibilityState={accessibilityState}
+      accessibilityRole="button"
+      accessibilityLabel="Pair audiobook and ebook"
+      style={({ pressed }) => [
+        styles.fabWrap,
+        pressed && styles.fabWrapPressed,
+      ]}
+      hitSlop={8}
+    >
+      <View style={styles.fabHalo} />
+      <View style={styles.fabCore}>
+        <View style={styles.plusH} />
+        <View style={styles.plusV} />
+      </View>
+    </Pressable>
+  );
 }
 
 // ── Main tab navigator ───────────────────────────────────────────────────────
@@ -67,31 +94,45 @@ export default function MainTabNavigator() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: '#1A1A2E',
-        tabBarInactiveTintColor: '#999',
-        tabBarStyle: { borderTopColor: '#E8E8E8' },
+        tabBarInactiveTintColor: '#B5B0A8',
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '500',
+          letterSpacing: 0.4,
+          marginTop: 2,
+        },
+        tabBarStyle: {
+          borderTopWidth: 0,
+          backgroundColor: '#FAF7F1',
+          height: 64 + (Platform.OS === 'ios' ? 18 : 0),
+          paddingTop: 6,
+        },
       }}
     >
       <Tab.Screen
         name="Library"
         component={LibraryNavigator}
-        options={{ title: 'Library' }}
+        options={{
+          title: 'Library',
+          tabBarIcon: ({ focused }) => <LibraryIcon focused={focused} />,
+        }}
       />
       <Tab.Screen
         name="Files"
         component={FilesScreen}
-        options={{ title: 'Files' }}
+        options={{
+          title: 'Files',
+          tabBarIcon: ({ focused }) => <FilesIcon focused={focused} />,
+        }}
       />
       <Tab.Screen
         name="Add"
         component={AddTabPlaceholder}
         options={{
-          tabBarLabel: 'Pair',
-          tabBarIcon: () => (
-            <View style={styles.addIcon}>
-              <Text style={styles.addIconText}>+</Text>
-            </View>
-          ),
+          tabBarLabel: () => null,
+          tabBarIcon: () => <View style={styles.fabSpacer} />,
           tabBarAccessibilityLabel: 'Pair audiobook and ebook',
+          tabBarButton: (props) => <PairFab {...props} />,
         }}
         listeners={({ navigation }) => ({
           tabPress: (e) => {
@@ -106,26 +147,72 @@ export default function MainTabNavigator() {
       <Tab.Screen
         name="Settings"
         component={SettingsScreen}
-        options={{ title: 'Settings', headerShown: true }}
+        options={{
+          title: 'Settings',
+          headerShown: true,
+          tabBarIcon: ({ focused }) => <SettingsIcon focused={focused} />,
+        }}
       />
     </Tab.Navigator>
   );
 }
 
 const styles = StyleSheet.create({
-  addIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  barTopAccent: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#E8E0D2',
+  },
+  fabSpacer: {
+    width: 48,
+    height: 48,
+  },
+  fabWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 0,
+  },
+  fabWrapPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.96 }],
+  },
+  fabHalo: {
+    position: 'absolute',
+    top: -18,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#FAF7F1',
+  },
+  fabCore: {
+    position: 'absolute',
+    top: -14,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: '#C9A96E',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: -4,
+    shadowColor: '#3A2A10',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#A7874A',
   },
-  addIconText: {
-    color: '#09090F',
-    fontSize: 22,
-    lineHeight: 24,
-    fontWeight: '300',
+  plusH: {
+    position: 'absolute',
+    width: 22,
+    height: 2.5,
+    borderRadius: 1.5,
+    backgroundColor: '#09090F',
+  },
+  plusV: {
+    position: 'absolute',
+    width: 2.5,
+    height: 22,
+    borderRadius: 1.5,
+    backgroundColor: '#09090F',
   },
 });

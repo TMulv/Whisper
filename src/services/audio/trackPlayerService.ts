@@ -59,7 +59,7 @@ export async function loadBook(
     url: book.localAudioUri,
     title: book.title,
     artist: book.author,
-    artwork: book.localEpubUri ?? undefined,
+    artwork: book.coverUri ?? undefined,
     duration: book.totalDurationSeconds,
   };
 

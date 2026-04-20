@@ -25,6 +25,7 @@ import { formatDuration } from '@/utils/timeUtils';
 import { FirestorePosition } from '@/types/firebase';
 import { M4BChapter } from '@/types/sync';
 import type { RootStackParamList } from '@/navigation/types';
+import AIInsightsModal from '@/components/ai/AIInsightsModal';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
@@ -57,6 +58,7 @@ export default function PlayerScreen() {
   const [chaptersOpen, setChaptersOpen] = useState(false);
   const [epubSyncBanner, setEpubSyncBanner] = useState<FirestorePosition | null>(null);
   const [lookingUpChapters, setLookingUpChapters] = useState(false);
+  const [aiVisible, setAiVisible] = useState(false);
   const [scrubberWidth, setScrubberWidth] = useState(1);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
@@ -294,14 +296,18 @@ export default function PlayerScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Speed + open reader row */}
+        {/* Speed + AI + open reader row */}
         <View style={styles.secondaryRow}>
           <TouchableOpacity style={styles.speedBtn} onPress={nextRate}>
             <Text style={styles.speedLabel}>{playbackRate === 1.0 ? '1×' : `${playbackRate}×`}</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity style={styles.aiBtn} onPress={() => setAiVisible(true)} activeOpacity={0.8}>
+            <Text style={styles.aiBtnText}>✨ Insights</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.readerBtn} onPress={handleOpenReader}>
-            <Text style={styles.readerBtnText}>Open in Reader</Text>
+            <Text style={styles.readerBtnText}>Reader</Text>
           </TouchableOpacity>
         </View>
 
@@ -326,6 +332,22 @@ export default function PlayerScreen() {
             </TouchableOpacity>
           </View>
         )}
+
+        {/* AI Insights modal */}
+        <AIInsightsModal
+          visible={aiVisible}
+          onClose={() => setAiVisible(false)}
+          chapterContext={{
+            bookTitle: title,
+            author: author,
+            chapterTitle: currentChapter?.title ?? '',
+            chapterIndex: currentChapter?.index ?? 0,
+            totalChapters: chapters.length || 1,
+          }}
+          onOpenSettings={() => {
+            (navigation as any).navigate('Main', { screen: 'Settings' });
+          }}
+        />
 
         {/* Chapter list toggle */}
         {chapters.length > 1 && (
@@ -561,6 +583,19 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '500',
+  },
+  aiBtn: {
+    backgroundColor: 'rgba(201,169,110,0.18)',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(201,169,110,0.45)',
+  },
+  aiBtnText: {
+    color: '#E8D4A8',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   findChaptersSection: {

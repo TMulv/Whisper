@@ -3,9 +3,12 @@ import React, {
   useImperativeHandle,
   useRef,
   useCallback,
+  useEffect,
+  useState,
 } from 'react';
 import { StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
+import { File, Directory, Paths } from 'expo-file-system';
 import {
   JS_LOAD_BOOK,
   JS_LOAD_BOOK_BASE64,
@@ -13,6 +16,8 @@ import {
   JS_GO_TO_CHAPTER,
   JS_SET_FONT_SIZE,
   JS_SET_THEME,
+  JS_SET_FONT_FAMILY,
+  JS_SET_MARGIN,
   JS_HIGHLIGHT_PROGRESS,
   JS_CLEAR_HIGHLIGHT,
 } from '@/constants/epubInjection';
@@ -38,14 +43,18 @@ export interface EpubWebViewRef {
   goToChapter: (index: number) => void;
   setFontSize: (px: number) => void;
   setTheme: (theme: EpubTheme) => void;
+  setFontFamily: (family: string) => void;
+  setMargin: (margin: string) => void;
   highlightProgress: (ratio: number) => void;
   clearHighlight: () => void;
+  getChapterText: (index: number, timeoutMs?: number) => Promise<string>;
 }
 
 interface Props {
   onReady?: () => void;
   onPositionChange?: (position: EpubPosition) => void;
   onChapterList?: (chapters: EpubChapter[]) => void;
+  onWordLookup?: (word: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -57,17 +66,60 @@ type BridgeMessage =
   | { type: 'LOCATIONS_READY'; count: number }
   | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; percentComplete: number }
   | { type: 'CHAPTER_LIST'; chapters: EpubChapter[] }
+  | { type: 'WORD_LOOKUP'; word: string }
+  | { type: 'CHAPTER_TEXT'; requestId: string; ok: boolean; text?: string; title?: string; chapterIndex?: number; error?: string }
   | { type: 'ERROR'; message: string };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
-  { onReady, onPositionChange, onChapterList, onError },
+  { onReady, onPositionChange, onChapterList, onWordLookup, onError },
   ref,
 ) {
   const webViewRef = useRef<WebView>(null);
   const bridgeReadyRef = useRef(false);
   const pendingCommandsRef = useRef<string[]>([]);
+  const pendingTextRequestsRef = useRef<
+    Map<string, { resolve: (text: string) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>
+  >(new Map());
+
+  // Resolve the bundled html asset URI once on mount. Loading via file URI
+  // avoids passing 300+ KB of HTML through the React Native bridge, which on
+  // Android was truncating the body and leaving JSZip/ePub/whisper undefined.
+  const [bridgeUri, setBridgeUri] = useState<string | null>(null);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Write the inline HTML string to a file: URI the WebView can load.
+        // We can't use source.html (Android truncates ~300 KB bodies to ~3 KB)
+        // and we can't use expo-asset.downloadAsync on a 330 KB HTML in dev
+        // (Metro's asset server rejects the fetch). Writing to document dir
+        // sidesteps both.
+        const readerDir = new Directory(Paths.document, 'reader');
+        if (!readerDir.exists) readerDir.create({ intermediates: true });
+        const target = new File(readerDir, 'epub-bridge.html');
+        if (target.exists) target.delete();
+        target.create();
+        target.write(EPUB_BRIDGE_HTML);
+        if (cancelled) return;
+        const finalUri = target.uri;
+        logger.info('EpubWebView: bridge written', {
+          finalUri,
+          size: EPUB_BRIDGE_HTML.length,
+        });
+        setBridgeUri(finalUri);
+      } catch (err) {
+        logger.error('Failed to stage epub-bridge asset', err);
+        onErrorRef.current?.('Failed to load reader.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Inject JS helper ──────────────────────────────────────────────────────
   const inject = useCallback((js: string) => {
@@ -111,8 +163,23 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     goToChapter: (index: number) => inject(JS_GO_TO_CHAPTER(index)),
     setFontSize: (px: number) => inject(JS_SET_FONT_SIZE(px)),
     setTheme: (theme: EpubTheme) => inject(JS_SET_THEME(theme)),
+    setFontFamily: (family: string) => inject(JS_SET_FONT_FAMILY(family)),
+    setMargin: (margin: string) => inject(JS_SET_MARGIN(margin)),
     highlightProgress: (ratio: number) => inject(JS_HIGHLIGHT_PROGRESS(ratio)),
     clearHighlight: () => inject(JS_CLEAR_HIGHLIGHT),
+    getChapterText: (index: number, timeoutMs = 15000) => {
+      const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingTextRequestsRef.current.delete(requestId);
+          reject(new Error('Timed out extracting chapter text'));
+        }, timeoutMs);
+        pendingTextRequestsRef.current.set(requestId, { resolve, reject, timer });
+        inject(
+          `window.whisper.getChapterText(${index}, ${JSON.stringify(requestId)}); true;`,
+        );
+      });
+    },
   }));
 
   // ── Message handler ───────────────────────────────────────────────────────
@@ -151,6 +218,23 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           onChapterList?.(msg.chapters);
           break;
 
+        case 'WORD_LOOKUP':
+          onWordLookup?.(msg.word);
+          break;
+
+        case 'CHAPTER_TEXT': {
+          const pending = pendingTextRequestsRef.current.get(msg.requestId);
+          if (!pending) break;
+          pendingTextRequestsRef.current.delete(msg.requestId);
+          clearTimeout(pending.timer);
+          if (msg.ok && typeof msg.text === 'string') {
+            pending.resolve(msg.text);
+          } else {
+            pending.reject(new Error(msg.error ?? 'Failed to extract chapter text'));
+          }
+          break;
+        }
+
         case 'LOCATIONS_READY':
           logger.debug(`epub locations ready: ${msg.count}`);
           break;
@@ -161,14 +245,16 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
       }
     },
-    [onReady, onPositionChange, onChapterList, onError, flushPending],
+    [onReady, onPositionChange, onChapterList, onWordLookup, onError, flushPending],
   );
+
+  if (!bridgeUri) return null;
 
   return (
     <WebView
       ref={webViewRef}
       style={styles.webview}
-      source={{ html: EPUB_BRIDGE_HTML, baseUrl: 'file:///' }}
+      source={{ uri: bridgeUri }}
       originWhitelist={['*']}
       allowFileAccess
       allowUniversalAccessFromFileURLs
@@ -177,41 +263,14 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
       domStorageEnabled
       mixedContentMode="always"
       onMessage={handleMessage}
-      injectedJavaScript={`
-        (function() {
-          // Forward unhandled JS errors to React Native.
-          // Ignore "Script error." (line 0) — these are cross-origin iframe errors
-          // that epub.js triggers normally when rendering content; they are not fatal.
-          window.onerror = function(msg, src, line) {
-            if (!msg || msg === 'Script error.' || line === 0) return true;
-            try { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-              JSON.stringify({type:'ERROR', message:'JS: '+msg+' (line '+line+')'})
-            ); } catch(e) {}
-            return true;
-          };
-          // Replace the synchronous char-code loop with an async blob decode.
-          // The original atob+loop blocks the UI thread for seconds on large EPUBs.
-          window.whisper.loadBookFromBase64 = function(b64) {
-            var self = this;
-            fetch('data:application/epub+zip;base64,' + b64)
-              .then(function(r) { return r.blob(); })
-              .then(function(blob) {
-                var url = URL.createObjectURL(blob);
-                self.loadBook(url);
-              })
-              .catch(function(e) {
-                try { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-                  JSON.stringify({type:'ERROR', message:'decode failed: '+(e.message||e)})
-                ); } catch(_) {}
-              });
-          };
-        })();
-        true;
-      `}
       onError={(e) => {
         logger.error('WebView error', e.nativeEvent);
         onError?.(e.nativeEvent.description ?? 'WebView crashed');
       }}
+      onLoadStart={() => logger.info('EpubWebView: onLoadStart')}
+      onLoadEnd={() => logger.info('EpubWebView: onLoadEnd')}
+      onHttpError={(e) => logger.error('EpubWebView onHttpError', e.nativeEvent)}
+      onRenderProcessGone={(e) => logger.error('EpubWebView onRenderProcessGone', e.nativeEvent)}
       scrollEnabled={false}
       bounces={false}
       renderToHardwareTextureAndroid

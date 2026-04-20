@@ -81,11 +81,11 @@ export async function pushPosition(
   position: SyncedPosition,
 ): Promise<void> {
   const firestorePos: FirestorePosition = {
-    chapterIndex: position.chapterIndex,
-    epubCfi: position.epubCfi,
-    charOffset: position.charOffset,
-    audioTimestamp: position.audioTimestamp,
-    percentComplete: position.percentComplete,
+    chapterIndex: position.chapterIndex ?? 0,
+    epubCfi: position.epubCfi ?? '',
+    charOffset: position.charOffset ?? 0,
+    audioTimestamp: position.audioTimestamp ?? 0,
+    percentComplete: position.percentComplete ?? 0,
     source: position.source,
     deviceId,
     updatedAt: position.updatedAt,

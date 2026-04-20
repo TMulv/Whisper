@@ -29,8 +29,31 @@ import {
   testConnection as testNextcloudConnection,
 } from '@/services/storage/nextcloudService';
 import { getStorageStats } from '@/services/storage/localStorageService';
+import * as WebBrowser from 'expo-web-browser';
+import {
+  getApiKey as getAiApiKey,
+  saveApiKey as saveAiApiKey,
+  clearApiKey as clearAiApiKey,
+  getModel as getAiModel,
+  saveModel as saveAiModel,
+  AI_MODELS,
+  type AIModelId,
+} from '@/services/ai/aiStorage';
+import {
+  getOfflineOnly as getDictOfflineOnly,
+  setOfflineOnly as setDictOfflineOnly,
+  getCachedCount as getDictCachedCount,
+  clearCache as clearDictCache,
+  preloadCommonWords,
+  PreloadProgress,
+} from '@/services/dictionary/dictionaryService';
 
 const ICLOUD_ENABLED_KEY = '@whisper/icloud_enabled';
+
+function maskKey(key: string): string {
+  if (key.length <= 12) return '••••';
+  return `${key.slice(0, 7)}••••${key.slice(-4)}`;
+}
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -54,14 +77,83 @@ export default function SettingsScreen() {
   // iCloud (iOS only)
   const [icloudEnabled, setIcloudEnabled] = useState(false);
 
+  // AI (Claude)
+  const [aiKeyMasked, setAiKeyMasked] = useState<string | null>(null);
+  const [aiKeyInput, setAiKeyInput] = useState('');
+  const [aiKeyVisible, setAiKeyVisible] = useState(false);
+  const [aiKeySaving, setAiKeySaving] = useState(false);
+  const [aiModel, setAiModelState] = useState<AIModelId>('claude-haiku-4-5-20251001');
+
+  // Dictionary (offline)
+  const [dictOfflineOnly, setDictOfflineOnlyState] = useState(false);
+  const [dictCachedCount, setDictCachedCount] = useState(0);
+  const [dictPreloadProgress, setDictPreloadProgress] = useState<PreloadProgress | null>(null);
+  const dictCancelRef = React.useRef<{ cancelled: boolean }>({ cancelled: false });
+
   useEffect(() => {
     isGDriveAuthenticated().then(setGdriveConnected);
     isNextcloudAuthenticated().then(setNextcloudConnected);
     getStorageStats().then(setCacheStats);
+    getDictOfflineOnly().then(setDictOfflineOnlyState);
+    getDictCachedCount().then(setDictCachedCount);
+    getAiApiKey().then((k) => setAiKeyMasked(k ? maskKey(k) : null));
+    getAiModel().then(setAiModelState);
     if (Platform.OS === 'ios') {
       AsyncStorage.getItem(ICLOUD_ENABLED_KEY).then((v) => setIcloudEnabled(v === 'true'));
     }
   }, []);
+
+  // ── AI ───────────────────────────────────────────────────────────────────────
+
+  const handleSaveAiKey = async () => {
+    const k = aiKeyInput.trim();
+    if (!k) return;
+    if (!k.startsWith('sk-ant-')) {
+      Alert.alert('Unusual key', 'Anthropic keys usually start with "sk-ant-". Save anyway?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Save', onPress: () => doSaveAiKey(k) },
+      ]);
+      return;
+    }
+    await doSaveAiKey(k);
+  };
+
+  const doSaveAiKey = async (k: string) => {
+    setAiKeySaving(true);
+    try {
+      await saveAiApiKey(k);
+      setAiKeyMasked(maskKey(k));
+      setAiKeyInput('');
+      setAiKeyVisible(false);
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to save key.');
+    } finally {
+      setAiKeySaving(false);
+    }
+  };
+
+  const handleClearAiKey = () => {
+    Alert.alert('Remove API key', 'Insights will stop working until a new key is added.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: async () => {
+          await clearAiApiKey();
+          setAiKeyMasked(null);
+        },
+      },
+    ]);
+  };
+
+  const handlePickAiModel = async (id: AIModelId) => {
+    setAiModelState(id);
+    await saveAiModel(id);
+  };
+
+  const handleOpenAnthropicConsole = async () => {
+    await WebBrowser.openBrowserAsync('https://console.anthropic.com/settings/keys');
+  };
 
   // ── Google Drive ─────────────────────────────────────────────────────────────
 
@@ -125,6 +217,49 @@ export default function SettingsScreen() {
     await AsyncStorage.setItem(ICLOUD_ENABLED_KEY, value ? 'true' : 'false');
   };
 
+  // ── Dictionary (offline) ────────────────────────────────────────────────────
+
+  const handleDictOfflineToggle = async (value: boolean) => {
+    setDictOfflineOnlyState(value);
+    await setDictOfflineOnly(value);
+  };
+
+  const handleDictPreload = async () => {
+    if (dictPreloadProgress) {
+      dictCancelRef.current.cancelled = true;
+      return;
+    }
+    dictCancelRef.current = { cancelled: false };
+    setDictPreloadProgress({ completed: 0, total: 0, cached: 0, failed: 0 });
+    try {
+      await preloadCommonWords((p) => setDictPreloadProgress(p), dictCancelRef.current);
+      const count = await getDictCachedCount();
+      setDictCachedCount(count);
+    } catch (err) {
+      Alert.alert('Download failed', err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setDictPreloadProgress(null);
+    }
+  };
+
+  const handleDictClear = () => {
+    Alert.alert(
+      'Clear dictionary cache',
+      `This will remove ${dictCachedCount} cached word${dictCachedCount === 1 ? '' : 's'}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearDictCache();
+            setDictCachedCount(0);
+          },
+        },
+      ],
+    );
+  };
+
   // ── Sign out ─────────────────────────────────────────────────────────────────
 
   const handleSignOut = () => {
@@ -171,6 +306,135 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           ))}
         </View>
+      </SettingsSection>
+
+      {/* Dictionary */}
+      <SettingsSection title="Dictionary">
+        <View style={styles.switchRow}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <Text style={styles.serviceLabel}>Offline only</Text>
+            <Text style={styles.serviceStatus}>
+              Skip network lookups — use cached words only
+            </Text>
+          </View>
+          <Switch
+            value={dictOfflineOnly}
+            onValueChange={handleDictOfflineToggle}
+            trackColor={{ false: '#D0D0D0', true: '#1A1A2E' }}
+            thumbColor="#fff"
+          />
+        </View>
+        <SettingsRow label="Cached words" value={String(dictCachedCount)} />
+        <View style={styles.serviceRow}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <Text style={styles.serviceLabel}>Download common words</Text>
+            <Text style={styles.serviceStatus}>
+              {dictPreloadProgress
+                ? `Downloading ${dictPreloadProgress.completed}/${dictPreloadProgress.total} · ${dictPreloadProgress.cached} saved`
+                : 'Prefetch definitions for ~500 common words for offline use'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[
+              styles.serviceBtn,
+              dictPreloadProgress && styles.serviceBtnDisconnect,
+            ]}
+            onPress={handleDictPreload}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.serviceBtnText}>
+              {dictPreloadProgress ? 'Cancel' : 'Download'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        {dictCachedCount > 0 && (
+          <TouchableOpacity style={styles.destructiveRow} onPress={handleDictClear}>
+            <Text style={styles.destructiveText}>Clear Cached Words</Text>
+          </TouchableOpacity>
+        )}
+      </SettingsSection>
+
+      {/* AI Insights (Claude) */}
+      <SettingsSection title="AI Insights">
+        <Text style={styles.serviceHint}>
+          Chapter recaps, metaphors, book-club questions and more — powered by Claude. Bring your own Anthropic API key. You only pay for what you use (typically pennies per chapter).
+        </Text>
+
+        {aiKeyMasked ? (
+          <View style={styles.serviceRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.serviceLabel}>API key</Text>
+              <Text style={styles.serviceStatus}>{aiKeyMasked}</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.serviceBtn, styles.serviceBtnDisconnect]}
+              onPress={handleClearAiKey}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.serviceBtnText}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <KeyboardAvoidingView behavior="padding">
+            <View style={styles.aiKeyInputRow}>
+              <TextInput
+                style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                placeholder="sk-ant-…"
+                placeholderTextColor="#AAA"
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry={!aiKeyVisible}
+                value={aiKeyInput}
+                onChangeText={setAiKeyInput}
+              />
+              <TouchableOpacity
+                style={styles.eyeBtn}
+                onPress={() => setAiKeyVisible((v) => !v)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.eyeBtnText}>{aiKeyVisible ? 'Hide' : 'Show'}</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.formBtns}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={handleOpenAnthropicConsole}>
+                <Text style={styles.cancelBtnText}>Get a key</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.serviceBtn, (!aiKeyInput.trim() || aiKeySaving) && styles.btnDisabled]}
+                onPress={handleSaveAiKey}
+                disabled={!aiKeyInput.trim() || aiKeySaving}
+                activeOpacity={0.8}
+              >
+                {aiKeySaving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.serviceBtnText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        )}
+
+        <Text style={[styles.rowLabel, { marginTop: 14, marginBottom: 4 }]}>Model</Text>
+        {AI_MODELS.map((m) => {
+          const active = aiModel === m.id;
+          return (
+            <TouchableOpacity
+              key={m.id}
+              style={[styles.aiModelRow, active && styles.aiModelRowActive]}
+              onPress={() => handlePickAiModel(m.id)}
+              activeOpacity={0.75}
+            >
+              <View style={[styles.radio, active && styles.radioActive]}>
+                {active && <View style={styles.radioFill} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.aiModelLabel}>{m.label}</Text>
+                <Text style={styles.aiModelDesc}>{m.tagline}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
       </SettingsSection>
 
       {/* Storage */}
@@ -470,4 +734,33 @@ const styles = StyleSheet.create({
   },
   cancelBtnText: { color: '#555', fontWeight: '500', fontSize: 14 },
   btnDisabled: { opacity: 0.6 },
+
+  aiKeyInputRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  eyeBtn: { paddingHorizontal: 10, paddingVertical: 8 },
+  eyeBtnText: { fontSize: 13, color: '#1A1A2E', fontWeight: '600' },
+
+  aiModelRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+  },
+  aiModelRowActive: { backgroundColor: 'rgba(26,26,46,0.04)' },
+  aiModelLabel: { fontSize: 14, fontWeight: '600', color: '#1A1A1A', marginBottom: 2 },
+  aiModelDesc: { fontSize: 12, color: '#888', lineHeight: 16 },
+
+  radio: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: '#CCC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+    marginRight: 12,
+  },
+  radioActive: { borderColor: '#1A1A2E' },
+  radioFill: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#1A1A2E' },
 });

@@ -17,15 +17,15 @@ import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-n
 import { useAuth } from '@/hooks/useAuth';
 import { writeBook, deleteBook } from '@/services/firebase/firestoreService';
 import { localListBooks, localWriteBook, localDeleteBook } from '@/services/book/localBookStore';
-import { getCachedPath, writeTextToCache } from '@/services/storage/localStorageService';
+import { getCachedPath, writeTextToCache, readTextFromCache } from '@/services/storage/localStorageService';
 import { parseChaptersJson, createFallbackChapter, chaptersFromAudnexus, serializeChapters } from '@/services/audio/m4bParser';
 import { lookupChapters, lookupChaptersByAsin } from '@/services/audio/chapterLookupService';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { navigateRoot } from '@/navigation/navigationRef';
+import CoverPickerModal from '@/components/library/CoverPickerModal';
 import { SyncMode, LocalBook } from '@/types/book';
 import { FirestoreBook } from '@/types/firebase';
 import { formatDuration } from '@/utils/timeUtils';
-import { File } from 'expo-file-system';
 import type { LibraryStackParamList } from '@/navigation/types';
 
 type Props = NativeStackScreenProps<LibraryStackParamList, 'BookDetail'>;
@@ -79,7 +79,8 @@ export default function BookDetailScreen() {
   const [hasSyncMap, setHasSyncMap] = useState(false);
   const [chapterFileExists, setChapterFileExists] = useState(false);
   const [lookingUpChapters, setLookingUpChapters] = useState(false);
-  const { startPlayback } = useNowPlaying();
+  const [coverPickerVisible, setCoverPickerVisible] = useState(false);
+  const { startPlayback, book: nowPlayingBook, clearNowPlaying, updateBookCover } = useNowPlaying();
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(20)).current;
@@ -93,6 +94,7 @@ export default function BookDetailScreen() {
         setBook(found);
         setSyncMode(found.syncMode);
         setHasSyncMap(!!found.syncMapPath);
+        if (!found.coverUrl) setCoverPickerVisible(true);
       }
       const chaptersUri = await getCachedPath(params.bookId, 'chapters', 'json');
       setChapterFileExists(!!chaptersUri);
@@ -199,6 +201,23 @@ export default function BookDetailScreen() {
 
   const handleOpenReader = () => navigation.navigate('Reader', { bookId: params.bookId });
 
+  const handleCoverSelect = async (coverUrl: string, pickedTitle: string, pickedAuthor: string) => {
+    if (!book || !user) return;
+    const updated = {
+      ...book,
+      coverUrl,
+      // Auto-fill title/author from the picked edition only if ours are empty/placeholder
+      title: book.title && book.title !== 'Untitled Book' ? book.title : pickedTitle,
+      author: book.author ? book.author : pickedAuthor,
+      updatedAt: Date.now(),
+    };
+    setBook(updated);
+    setCoverPickerVisible(false);
+    updateBookCover(book.id, coverUrl);
+    await localWriteBook(user.uid, book.id, updated);
+    writeBook(user.uid, book.id, updated).catch(() => {});
+  };
+
   const handleDelete = () => {
     Alert.alert('Remove Book', 'Remove this book and all its data?', [
       { text: 'Cancel', style: 'cancel' },
@@ -207,6 +226,9 @@ export default function BookDetailScreen() {
         style: 'destructive',
         onPress: async () => {
           if (!user) return;
+          if (nowPlayingBook?.id === params.bookId) {
+            await clearNowPlaying().catch(() => {});
+          }
           await localDeleteBook(user.uid, params.bookId);
           deleteBook(user.uid, params.bookId).catch(() => {});
           navigation.goBack();
@@ -226,15 +248,10 @@ export default function BookDetailScreen() {
         return;
       }
       let chapters = createFallbackChapter(book.totalDurationSeconds);
-      const chaptersUri = await getCachedPath(params.bookId, 'chapters', 'json');
-      if (chaptersUri) {
-        try {
-          const chaptersFile = new File(chaptersUri);
-          const json = await chaptersFile.text();
-          chapters = parseChaptersJson(json);
-        } catch {
-          // use fallback
-        }
+      const json = await readTextFromCache(params.bookId, 'chapters', 'json');
+      if (json) {
+        const parsed = parseChaptersJson(json);
+        if (parsed.length > 0) chapters = parsed;
       }
       const localBook: LocalBook = {
         id: params.bookId,
@@ -268,7 +285,13 @@ export default function BookDetailScreen() {
   if (loading) {
     return (
       <View style={styles.loadingScreen}>
-        <AnimatedLoader variant="book" color={C.gold} size={72} message="Fetching your book" />
+        <AnimatedLoader
+          variant="random"
+          color={C.gold}
+          accent={C.text}
+          size={72}
+          message="Fetching your book"
+        />
       </View>
     );
   }
@@ -295,18 +318,23 @@ export default function BookDetailScreen() {
         <Animated.View
           style={[styles.hero, { opacity: headerOpacity, transform: [{ translateY: headerSlide }] }]}
         >
-          <View style={styles.coverStack}>
+          <TouchableOpacity
+            style={styles.coverStack}
+            onPress={() => setCoverPickerVisible(true)}
+            activeOpacity={0.8}
+          >
             {book.coverUrl ? (
               <Image source={{ uri: book.coverUrl }} style={styles.cover} resizeMode="cover" />
             ) : (
               <View style={styles.coverPlaceholder}>
                 <Text style={styles.coverInitial}>{book.title[0]?.toUpperCase() ?? '?'}</Text>
+                <Text style={styles.coverAddHint}>Tap to add cover</Text>
               </View>
             )}
             <View style={styles.pairedBadge}>
               <Text style={styles.pairedBadgeText}>PAIRED</Text>
             </View>
-          </View>
+          </TouchableOpacity>
 
           <Text style={styles.title}>{book.title}</Text>
           {book.author ? <Text style={styles.author}>{book.author}</Text> : null}
@@ -442,6 +470,17 @@ export default function BookDetailScreen() {
           </TouchableOpacity>
         </Animated.View>
       </ScrollView>
+
+      <CoverPickerModal
+        visible={coverPickerVisible}
+        bookId={book.id}
+        initialTitle={book.title}
+        initialAuthor={book.author}
+        allowSkip={!!book.coverUrl}
+        onSelect={handleCoverSelect}
+        onSkip={() => setCoverPickerVisible(false)}
+        onClose={() => setCoverPickerVisible(false)}
+      />
     </View>
   );
 }
@@ -479,6 +518,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   coverInitial: { color: C.gold, fontSize: 52, fontWeight: '300' },
+  coverAddHint: {
+    position: 'absolute',
+    bottom: 12,
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+    color: C.textMuted,
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
   pairedBadge: {
     position: 'absolute',
     bottom: -10,

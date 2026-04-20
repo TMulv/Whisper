@@ -5,18 +5,36 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Modal,
-  Animated,
 } from 'react-native';
 import { EpubChapter, EpubTheme } from './EpubWebView';
+
+export type ReaderFontFamily = 'serif' | 'sans' | 'palatino' | 'mono';
+export type ReaderMargin = 'narrow' | 'normal' | 'wide';
+
+export const FONT_FAMILY_VALUES: Record<ReaderFontFamily, string> = {
+  serif: "Georgia,'Times New Roman',serif",
+  sans: "-apple-system,Roboto,'Helvetica Neue',sans-serif",
+  palatino: "Palatino,'Palatino Linotype','Book Antiqua',serif",
+  mono: "Menlo,Consolas,monospace",
+};
+
+export const MARGIN_VALUES: Record<ReaderMargin, string> = {
+  narrow: '12px 10px',
+  normal: '16px 20px',
+  wide: '20px 36px',
+};
 
 interface Props {
   chapters: EpubChapter[];
   currentChapterIndex: number;
   fontSize: number;
   theme: EpubTheme;
+  fontFamily: ReaderFontFamily;
+  margin: ReaderMargin;
   onFontSizeChange: (px: number) => void;
   onThemeChange: (theme: EpubTheme) => void;
+  onFontFamilyChange: (family: ReaderFontFamily) => void;
+  onMarginChange: (margin: ReaderMargin) => void;
   onChapterSelect: (index: number) => void;
   onClose: () => void;
 }
@@ -28,14 +46,29 @@ const THEMES: { value: EpubTheme; label: string; bg: string; fg: string }[] = [
   { value: 'dark',   label: 'Dark',   bg: '#121212', fg: '#e0e0e0' },
   { value: 'eink',   label: 'E-ink',  bg: '#fff',    fg: '#000' },
 ];
+const FONT_FAMILIES: { value: ReaderFontFamily; label: string; previewFont: string }[] = [
+  { value: 'serif',    label: 'Georgia',  previewFont: 'Georgia' },
+  { value: 'sans',     label: 'Sans',     previewFont: 'System' },
+  { value: 'palatino', label: 'Palatino', previewFont: 'Palatino' },
+  { value: 'mono',     label: 'Mono',     previewFont: 'Menlo' },
+];
+const MARGINS: { value: ReaderMargin; label: string }[] = [
+  { value: 'narrow', label: 'Narrow' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'wide',   label: 'Wide' },
+];
 
 export default function ReaderControls({
   chapters,
   currentChapterIndex,
   fontSize,
   theme,
+  fontFamily,
+  margin,
   onFontSizeChange,
   onThemeChange,
+  onFontFamilyChange,
+  onMarginChange,
   onChapterSelect,
   onClose,
 }: Props) {
@@ -43,10 +76,8 @@ export default function ReaderControls({
 
   return (
     <View style={styles.panel}>
-      {/* Drag handle */}
       <View style={styles.handle} />
 
-      {/* Tab bar */}
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tab, tab === 'display' && styles.tabActive]}
@@ -65,10 +96,8 @@ export default function ReaderControls({
         </TouchableOpacity>
       </View>
 
-      {/* Content */}
       {tab === 'display' ? (
-        <View style={styles.displayTab}>
-          {/* Font size */}
+        <ScrollView style={styles.displayScroll} contentContainerStyle={styles.displayTab}>
           <Text style={styles.controlLabel}>Text size</Text>
           <View style={styles.fontSizeRow}>
             <Text style={styles.fontSizeSmall}>A</Text>
@@ -93,8 +122,57 @@ export default function ReaderControls({
             <Text style={styles.fontSizeLarge}>A</Text>
           </View>
 
-          {/* Theme */}
-          <Text style={[styles.controlLabel, { marginTop: 20 }]}>Theme</Text>
+          <Text style={[styles.controlLabel, { marginTop: 22 }]}>Font</Text>
+          <View style={styles.fontFamilyRow}>
+            {FONT_FAMILIES.map((f) => (
+              <TouchableOpacity
+                key={f.value}
+                style={[
+                  styles.fontFamilyChip,
+                  fontFamily === f.value && styles.fontFamilyChipActive,
+                ]}
+                onPress={() => onFontFamilyChange(f.value)}
+                activeOpacity={0.8}
+              >
+                <Text
+                  style={[
+                    styles.fontFamilyChipText,
+                    { fontFamily: f.previewFont },
+                    fontFamily === f.value && styles.fontFamilyChipTextActive,
+                  ]}
+                >
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={[styles.controlLabel, { marginTop: 22 }]}>Margins</Text>
+          <View style={styles.marginRow}>
+            {MARGINS.map((m) => (
+              <TouchableOpacity
+                key={m.value}
+                style={[
+                  styles.marginChip,
+                  margin === m.value && styles.marginChipActive,
+                ]}
+                onPress={() => onMarginChange(m.value)}
+                activeOpacity={0.8}
+              >
+                <MarginIcon value={m.value} active={margin === m.value} />
+                <Text
+                  style={[
+                    styles.marginChipText,
+                    margin === m.value && styles.marginChipTextActive,
+                  ]}
+                >
+                  {m.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={[styles.controlLabel, { marginTop: 22 }]}>Theme</Text>
           <View style={styles.themeRow}>
             {THEMES.map((t) => (
               <TouchableOpacity
@@ -116,7 +194,8 @@ export default function ReaderControls({
               </TouchableOpacity>
             ))}
           </View>
-        </View>
+          <View style={{ height: 20 }} />
+        </ScrollView>
       ) : (
         <ScrollView style={styles.chapterList} keyboardShouldPersistTaps="handled">
           {chapters.map((ch) => (
@@ -153,6 +232,27 @@ export default function ReaderControls({
   );
 }
 
+function MarginIcon({ value, active }: { value: ReaderMargin; active: boolean }) {
+  const insetByValue = { narrow: 4, normal: 8, wide: 14 }[value];
+  const color = active ? '#fff' : '#888';
+  return (
+    <View style={[styles.marginIconOuter, { borderColor: color }]}>
+      <View
+        style={{
+          position: 'absolute',
+          left: insetByValue,
+          right: insetByValue,
+          top: 3,
+          bottom: 3,
+          backgroundColor: color,
+          opacity: 0.5,
+          borderRadius: 1,
+        }}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   panel: {
     backgroundColor: '#fff',
@@ -163,7 +263,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 8,
     elevation: 12,
-    maxHeight: '65%',
+    maxHeight: '78%',
   },
   handle: {
     width: 36,
@@ -195,8 +295,8 @@ const styles = StyleSheet.create({
   closeBtn: { marginLeft: 'auto', padding: 8 },
   closeBtnText: { fontSize: 16, color: '#888' },
 
-  // Display tab
-  displayTab: { padding: 20 },
+  displayScroll: { maxHeight: '92%' },
+  displayTab: { padding: 20, paddingBottom: 32 },
   controlLabel: {
     fontSize: 12,
     fontWeight: '700',
@@ -222,6 +322,46 @@ const styles = StyleSheet.create({
   fontSizeBtnActive: { backgroundColor: '#1A1A2E' },
   fontSizeBtnText: { color: '#555', fontWeight: '600' },
   fontSizeBtnTextActive: { color: '#fff' },
+
+  fontFamilyRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  fontFamilyChip: {
+    flex: 1,
+    minWidth: 70,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    backgroundColor: '#FAFAFA',
+    alignItems: 'center',
+  },
+  fontFamilyChipActive: { backgroundColor: '#1A1A2E', borderColor: '#1A1A2E' },
+  fontFamilyChipText: { fontSize: 15, color: '#333', fontWeight: '600' },
+  fontFamilyChipTextActive: { color: '#fff' },
+
+  marginRow: { flexDirection: 'row', gap: 8 },
+  marginChip: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    backgroundColor: '#FAFAFA',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  marginChipActive: { backgroundColor: '#1A1A2E', borderColor: '#1A1A2E' },
+  marginChipText: { fontSize: 12, color: '#555', fontWeight: '600' },
+  marginChipTextActive: { color: '#fff' },
+  marginIconOuter: {
+    width: 40,
+    height: 20,
+    borderWidth: 1,
+    borderRadius: 3,
+    position: 'relative',
+  },
+
   themeRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
   themeChip: {
     flex: 1,
@@ -247,7 +387,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  // Chapter list
   chapterList: { maxHeight: 380 },
   chapterRow: {
     flexDirection: 'row',

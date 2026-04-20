@@ -26,6 +26,20 @@ function reportPickError(kind: 'ebook' | 'audio', err: unknown) {
   Alert.alert('Import failed', `Couldn't import the ${kind} file.\n\n${msg}`);
 }
 
+const EPUB_EXT_RE = /\.epub$/i;
+const AUDIO_EXT_RE = /\.(m4b|mp3|m4a|aac|ogg|flac|opus|wav)$/i;
+
+function reportWrongKind(expected: 'ebook' | 'audio', name: string) {
+  const want =
+    expected === 'ebook'
+      ? 'an .epub file'
+      : 'an audio file (.m4b, .mp3, .m4a, .aac, .ogg, .flac, .opus, .wav)';
+  Alert.alert(
+    `Wrong file type`,
+    `"${name}" isn't a valid ${expected}. Please pick ${want}.`,
+  );
+}
+
 export function useFileStorage(): UseFileStorageReturn {
   const pickEpub = useCallback(async (bookId: string): Promise<PickResult | null> => {
     try {
@@ -37,9 +51,13 @@ export function useFileStorage(): UseFileStorageReturn {
       if (result.canceled || !result.assets?.[0]) return null;
 
       const asset = result.assets[0];
-      const extension = 'epub';
-      const localUri = await cacheFile(asset.uri, bookId, 'epub', extension);
-      return { uri: localUri, name: asset.name ?? '' };
+      const name = asset.name ?? '';
+      if (!EPUB_EXT_RE.test(name)) {
+        reportWrongKind('ebook', name || '(unknown)');
+        return null;
+      }
+      const localUri = await cacheFile(asset.uri, bookId, 'epub', 'epub');
+      return { uri: localUri, name };
     } catch (err) {
       logger.error('pickEpub failed', err);
       reportPickError('ebook', err);
@@ -58,6 +76,10 @@ export function useFileStorage(): UseFileStorageReturn {
 
       const asset = result.assets[0];
       const name = asset.name ?? '';
+      if (!AUDIO_EXT_RE.test(name)) {
+        reportWrongKind('audio', name || '(unknown)');
+        return null;
+      }
       const extension = name.split('.').pop() ?? 'mp3';
       const localUri = await cacheFile(asset.uri, bookId, 'audio', extension);
       return { uri: localUri, name };

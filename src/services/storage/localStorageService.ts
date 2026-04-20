@@ -14,11 +14,20 @@ interface CacheMeta {
 }
 
 function getCacheDir(): Directory {
-  return new Directory(Paths.cache, CACHE_DIR);
+  return new Directory(Paths.document, CACHE_DIR);
 }
 
 function buildCacheFile(bookId: string, type: FileType, extension: string): File {
   return new File(getCacheDir(), `${bookId}_${type}.${extension}`);
+}
+
+/**
+ * Returns the canonical cache URI for a book file. Use this instead of
+ * hand-rolled `${Paths.document}whisper/…` templates so every writer and
+ * reader agrees on the same path format.
+ */
+export function buildCachePath(bookId: string, type: FileType, extension: string): string {
+  return buildCacheFile(bookId, type, extension).uri;
 }
 
 export async function ensureCacheDir(): Promise<void> {
@@ -109,6 +118,20 @@ export async function evictOldFiles(maxSizeMb: number = MAX_CACHE_SIZE_MB): Prom
   await setCacheMeta(meta);
 }
 
+export async function readTextFromCache(
+  bookId: string,
+  type: FileType,
+  extension: string,
+): Promise<string | null> {
+  const file = buildCacheFile(bookId, type, extension);
+  if (!file.exists) return null;
+  try {
+    return await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.UTF8 });
+  } catch {
+    return null;
+  }
+}
+
 export async function writeTextToCache(
   text: string,
   bookId: string,
@@ -117,14 +140,14 @@ export async function writeTextToCache(
 ): Promise<string> {
   await ensureCacheDir();
   const file = buildCacheFile(bookId, type, extension);
-  file.write(text);
+  await FileSystem.writeAsStringAsync(file.uri, text, { encoding: FileSystem.EncodingType.UTF8 });
 
   const meta = await getCacheMeta();
   meta[file.uri] = {
     bookId,
     type,
     lastAccessedAt: Date.now(),
-    sizeBytes: file.size ?? text.length,
+    sizeBytes: text.length,
   };
   await setCacheMeta(meta);
 

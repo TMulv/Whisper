@@ -16,6 +16,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useBooks } from '@/hooks/useBook';
 import {
   listCachedFiles,
+  getRecentPicks,
   CachedFile,
   PickKind,
 } from '@/services/storage/recentPicksService';
@@ -43,6 +44,7 @@ const C = {
 interface FileRow extends CachedFile {
   pairedBookId: string | null;
   pairedBookTitle: string | null;
+  displayName: string;
 }
 
 function formatSize(bytes: number): string {
@@ -51,10 +53,39 @@ function formatSize(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-function prettyName(name: string): string {
-  // cache files look like "<uuid>_epub.epub" or "<uuid>_audio.m4b"
-  return name.replace(/^[a-f0-9-]+_(epub|audio)\./i, '').replace(/\.[^.]+$/, '')
-    || name;
+function stripExt(name: string): string {
+  return name.replace(/\.[^.]+$/, '').trim();
+}
+
+function normalizeStem(name: string): string {
+  return stripExt(name)
+    .toLowerCase()
+    .replace(/[\s_\-.()\[\]]+/g, ' ')
+    .trim();
+}
+
+function findPartnerUri(
+  selectedStem: string,
+  pool: Array<{ uri: string; displayName: string }>,
+): string | null {
+  if (!selectedStem) return null;
+  const exact = pool.find((c) => normalizeStem(c.displayName) === selectedStem);
+  if (exact) return exact.uri;
+  const contained = pool.find((c) => {
+    const n = normalizeStem(c.displayName);
+    return (
+      n.length >= 4 &&
+      selectedStem.length >= 4 &&
+      (n.includes(selectedStem) || selectedStem.includes(n))
+    );
+  });
+  return contained?.uri ?? null;
+}
+
+function fallbackLabel(kind: PickKind): string {
+  if (kind === 'audio') return 'Untitled audiobook';
+  if (kind === 'epub') return 'Untitled ebook';
+  return 'Untitled file';
 }
 
 export default function FilesScreen() {
@@ -64,12 +95,18 @@ export default function FilesScreen() {
   const { books } = useBooks(user?.uid ?? null);
 
   const [files, setFiles] = useState<CachedFile[]>([]);
+  const [originalNames, setOriginalNames] = useState<Record<string, string>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [selectedAudio, setSelectedAudio] = useState<string | null>(null);
   const [selectedEpub, setSelectedEpub] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setFiles(listCachedFiles());
+    getRecentPicks().then((picks) => {
+      const map: Record<string, string> = {};
+      for (const p of picks) map[p.uri] = p.name;
+      setOriginalNames(map);
+    });
   }, []);
 
   useEffect(() => {
@@ -86,17 +123,24 @@ export default function FilesScreen() {
     }
     const decorate = (f: CachedFile): FileRow => {
       const paired = byUri.get(f.uri) ?? null;
+      const origRaw = originalNames[f.uri];
+      const orig = origRaw ? stripExt(origRaw) : '';
+      const displayName =
+        paired?.title?.trim() ||
+        orig ||
+        fallbackLabel(f.kind);
       return {
         ...f,
         pairedBookId: paired?.id ?? null,
         pairedBookTitle: paired?.title ?? null,
+        displayName,
       };
     };
     return {
       audio: files.filter((f) => f.kind === 'audio').map(decorate),
       epub: files.filter((f) => f.kind === 'epub').map(decorate),
     };
-  }, [files, books]);
+  }, [files, books, originalNames]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -104,19 +148,50 @@ export default function FilesScreen() {
     setTimeout(() => setRefreshing(false), 400);
   }, [refresh]);
 
-  const handleSelect = useCallback((kind: PickKind, uri: string) => {
-    if (kind === 'audio') {
-      setSelectedAudio((curr) => (curr === uri ? null : uri));
-    } else if (kind === 'epub') {
-      setSelectedEpub((curr) => (curr === uri ? null : uri));
-    }
-  }, []);
+  const handleSelect = useCallback(
+    (kind: PickKind, uri: string) => {
+      if (kind === 'audio') {
+        if (selectedAudio === uri) {
+          setSelectedAudio(null);
+          return;
+        }
+        setSelectedAudio(uri);
+        if (!selectedEpub) {
+          const picked = rows.audio.find((r) => r.uri === uri);
+          if (picked) {
+            const match = findPartnerUri(
+              normalizeStem(picked.displayName),
+              rows.epub.map((r) => ({ uri: r.uri, displayName: r.displayName })),
+            );
+            if (match) setSelectedEpub(match);
+          }
+        }
+      } else if (kind === 'epub') {
+        if (selectedEpub === uri) {
+          setSelectedEpub(null);
+          return;
+        }
+        setSelectedEpub(uri);
+        if (!selectedAudio) {
+          const picked = rows.epub.find((r) => r.uri === uri);
+          if (picked) {
+            const match = findPartnerUri(
+              normalizeStem(picked.displayName),
+              rows.audio.map((r) => ({ uri: r.uri, displayName: r.displayName })),
+            );
+            if (match) setSelectedAudio(match);
+          }
+        }
+      }
+    },
+    [rows, selectedAudio, selectedEpub],
+  );
 
   const handleDelete = useCallback(
     (row: FileRow) => {
       const msg = row.pairedBookTitle
-        ? `"${prettyName(row.name)}" is paired with "${row.pairedBookTitle}". Delete the file anyway? The book will stop working.`
-        : `Delete "${prettyName(row.name)}"?`;
+        ? `"${row.displayName}" is paired with "${row.pairedBookTitle}". Delete the file anyway? The book will stop working.`
+        : `Delete "${row.displayName}"?`;
       Alert.alert('Delete file', msg, [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -141,7 +216,8 @@ export default function FilesScreen() {
     if (!audioFile || !epubFile) return;
 
     const bookId = Crypto.randomUUID();
-    const title = prettyName(epubFile.name);
+    const epubOriginal = originalNames[epubFile.uri];
+    const title = (epubOriginal ? stripExt(epubOriginal) : '') || fallbackLabel('epub');
     const now = Date.now();
     const bookData = {
       title,
@@ -169,7 +245,7 @@ export default function FilesScreen() {
       const m = err instanceof Error ? err.message : String(err);
       Alert.alert('Pair failed', m);
     }
-  }, [user, selectedAudio, selectedEpub, files, navigation]);
+  }, [user, selectedAudio, selectedEpub, files, navigation, originalNames]);
 
   const renderItem = useCallback(
     ({ item }: { item: FileRow }) => {
@@ -189,12 +265,12 @@ export default function FilesScreen() {
           </View>
           <View style={styles.rowMeta}>
             <Text style={styles.rowTitle} numberOfLines={1}>
-              {prettyName(item.name)}
+              {item.displayName}
             </Text>
             <Text style={styles.rowSub} numberOfLines={1}>
               {formatSize(item.sizeBytes)}
               {item.pairedBookTitle
-                ? `  •  paired with ${item.pairedBookTitle}`
+                ? '  •  paired'
                 : '  •  unpaired'}
             </Text>
           </View>
@@ -222,6 +298,8 @@ export default function FilesScreen() {
   const canPair = selectedAudio !== null && selectedEpub !== null;
   const audioCount = rows.audio.length;
   const epubCount = rows.epub.length;
+  const selectedEpubRow = rows.epub.find((r) => r.uri === selectedEpub) ?? null;
+  const selectedAudioRow = rows.audio.find((r) => r.uri === selectedAudio) ?? null;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -270,9 +348,9 @@ export default function FilesScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.pairLabel}>READY TO PAIR</Text>
             <Text style={styles.pairText} numberOfLines={1}>
-              {prettyName(files.find((f) => f.uri === selectedEpub)?.name ?? '')}
+              {selectedEpubRow?.displayName ?? fallbackLabel('epub')}
               {'  ↔  '}
-              {prettyName(files.find((f) => f.uri === selectedAudio)?.name ?? '')}
+              {selectedAudioRow?.displayName ?? fallbackLabel('audio')}
             </Text>
           </View>
           <TouchableOpacity style={styles.pairBtn} onPress={handlePair} activeOpacity={0.85}>

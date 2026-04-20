@@ -65,7 +65,7 @@ export async function clearRecentPicks(): Promise<void> {
 
 export function listCachedFiles(): CachedFile[] {
   try {
-    const dir = new Directory(Paths.cache, CACHE_DIR);
+    const dir = new Directory(Paths.document, CACHE_DIR);
     if (!dir.exists) return [];
     const entries = dir.list();
     const files: CachedFile[] = [];
