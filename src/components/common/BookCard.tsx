@@ -15,13 +15,16 @@ interface Props {
   book: LocalBook;
   percentComplete?: number;
   onPress: () => void;
+  onLongPress?: () => void;
 }
 
-export default function BookCard({ book, percentComplete = 0, onPress }: Props) {
+export default function BookCard({ book, percentComplete = 0, onPress, onLongPress }: Props) {
   return (
     <TouchableOpacity
       style={styles.card}
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={500}
       activeOpacity={0.75}
       hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
     >

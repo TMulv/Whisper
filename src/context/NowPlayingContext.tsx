@@ -12,6 +12,7 @@ interface NowPlayingState {
 interface NowPlayingContextValue extends NowPlayingState {
   startPlayback: (book: LocalBook, chapters: M4BChapter[], startTimestamp?: number) => Promise<void>;
   clearNowPlaying: () => Promise<void>;
+  setChapters: (chapters: M4BChapter[]) => void;
 }
 
 const NowPlayingContext = createContext<NowPlayingContextValue>({
@@ -19,6 +20,7 @@ const NowPlayingContext = createContext<NowPlayingContextValue>({
   chapters: [],
   startPlayback: async () => {},
   clearNowPlaying: async () => {},
+  setChapters: () => {},
 });
 
 export function NowPlayingProvider({ children }: { children: React.ReactNode }) {
@@ -49,7 +51,7 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   return (
-    <NowPlayingContext.Provider value={{ book, chapters, startPlayback, clearNowPlaying }}>
+    <NowPlayingContext.Provider value={{ book, chapters, startPlayback, clearNowPlaying, setChapters }}>
       {children}
     </NowPlayingContext.Provider>
   );

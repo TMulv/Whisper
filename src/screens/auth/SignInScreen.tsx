@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  Alert,
   View,
   Text,
   TextInput,
@@ -13,6 +14,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '@/hooks/useAuth';
+import { sendPasswordReset } from '@/services/firebase/authService';
 import type { AuthStackParamList } from '@/navigation/types';
 
 type NavProp = NativeStackNavigationProp<AuthStackParamList, 'SignIn'>;
@@ -25,6 +27,20 @@ export default function SignInScreen() {
 
   const { signIn } = useAuth();
   const navigation = useNavigation<NavProp>();
+
+  const handleForgotPassword = async () => {
+    const trimmed = email.trim();
+    if (!trimmed) {
+      setErrorMsg('Enter your email address above, then tap Forgot Password.');
+      return;
+    }
+    try {
+      await sendPasswordReset(trimmed);
+      Alert.alert('Email sent', `Password reset link sent to ${trimmed}.`);
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to send reset email.');
+    }
+  };
 
   const handleSignIn = async () => {
     if (!email.trim() || !password) {
@@ -92,6 +108,14 @@ export default function SignInScreen() {
             ) : (
               <Text style={styles.buttonText}>Sign In</Text>
             )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.linkRow}
+            onPress={handleForgotPassword}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.link}>Forgot password? <Text style={styles.linkBold}>Reset it</Text></Text>
           </TouchableOpacity>
 
           <TouchableOpacity

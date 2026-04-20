@@ -1,15 +1,22 @@
 import React from 'react';
-import { View, ActivityIndicator, Text, StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { AnimatedLoader, LoaderVariant } from './AnimatedLoader';
 
 interface Props {
   message?: string;
+  variant?: LoaderVariant;
+  tone?: 'light' | 'dark';
 }
 
-export default function LoadingOverlay({ message }: Props) {
+export default function LoadingOverlay({ message, variant = 'book', tone = 'light' }: Props) {
+  const isDark = tone === 'dark';
   return (
-    <View style={styles.overlay}>
-      <ActivityIndicator size="large" color="#1A1A2E" />
-      {message ? <Text style={styles.message}>{message}</Text> : null}
+    <View style={[styles.overlay, isDark ? styles.overlayDark : styles.overlayLight]}>
+      <AnimatedLoader
+        variant={variant}
+        color={isDark ? '#C9A96E' : '#1A1A2E'}
+        message={message}
+      />
     </View>
   );
 }
@@ -17,15 +24,10 @@ export default function LoadingOverlay({ message }: Props) {
 const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255,255,255,0.85)',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 100,
   },
-  message: {
-    marginTop: 16,
-    fontSize: 15,
-    color: '#333',
-    fontWeight: '500',
-  },
+  overlayLight: { backgroundColor: 'rgba(255,255,255,0.9)' },
+  overlayDark: { backgroundColor: 'rgba(9,9,15,0.92)' },
 });

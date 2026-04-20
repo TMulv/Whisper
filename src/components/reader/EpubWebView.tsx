@@ -13,6 +13,8 @@ import {
   JS_GO_TO_CHAPTER,
   JS_SET_FONT_SIZE,
   JS_SET_THEME,
+  JS_HIGHLIGHT_PROGRESS,
+  JS_CLEAR_HIGHLIGHT,
 } from '@/constants/epubInjection';
 import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
@@ -31,10 +33,13 @@ export interface EpubChapter {
 export interface EpubWebViewRef {
   loadBook: (localUri: string) => void;
   loadBookBase64: (base64: string) => void;
+  loadBookFromUri: (fileUri: string) => void;
   goTo: (cfi: string) => void;
   goToChapter: (index: number) => void;
   setFontSize: (px: number) => void;
   setTheme: (theme: EpubTheme) => void;
+  highlightProgress: (ratio: number) => void;
+  clearHighlight: () => void;
 }
 
 interface Props {
@@ -47,7 +52,7 @@ interface Props {
 // ── Bridge message types ──────────────────────────────────────────────────────
 
 type BridgeMessage =
-  | { type: 'BRIDGE_LOADED' }
+  | { type: 'BRIDGE_LOADED'; v?: string }
   | { type: 'READY' }
   | { type: 'LOCATIONS_READY'; count: number }
   | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; percentComplete: number }
@@ -85,12 +90,29 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
       inject(JS_LOAD_BOOK(localUri));
     },
     loadBookBase64: (base64: string) => {
-      inject(JS_LOAD_BOOK_BASE64(base64));
+      // Android's evaluateJavascript() silently drops strings larger than ~1 MB.
+      // Split into 200 KB chunks, reassemble in the WebView, then load.
+      const CHUNK = 200_000;
+      const total = Math.ceil(base64.length / CHUNK);
+      inject('window._ebp=[]; true;');
+      for (let i = 0; i < total; i++) {
+        const slice = base64.slice(i * CHUNK, (i + 1) * CHUNK);
+        inject('window._ebp.push(' + JSON.stringify(slice) + '); true;');
+      }
+      inject('window.whisper.loadBookFromBase64(window._ebp.join("")); window._ebp=null; true;');
+    },
+    loadBookFromUri: (fileUri: string) => {
+      // Preferred path for large EPUBs: the WebView fetches the file directly
+      // via its own file:// access instead of us shuttling 31 MB across the RN
+      // bridge. Requires allowFileAccess(FromFileURLs) on the WebView.
+      inject(`window.whisper.loadBookFromUri(${JSON.stringify(fileUri)}); true;`);
     },
     goTo: (cfi: string) => inject(JS_GO_TO_CFI(cfi)),
     goToChapter: (index: number) => inject(JS_GO_TO_CHAPTER(index)),
     setFontSize: (px: number) => inject(JS_SET_FONT_SIZE(px)),
     setTheme: (theme: EpubTheme) => inject(JS_SET_THEME(theme)),
+    highlightProgress: (ratio: number) => inject(JS_HIGHLIGHT_PROGRESS(ratio)),
+    clearHighlight: () => inject(JS_CLEAR_HIGHLIGHT),
   }));
 
   // ── Message handler ───────────────────────────────────────────────────────
@@ -106,12 +128,14 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
 
       switch (msg.type) {
         case 'BRIDGE_LOADED':
+          logger.info('EpubWebView: BRIDGE_LOADED', { v: msg.v ?? 'none' });
           bridgeReadyRef.current = true;
           flushPending();
           onReady?.();
           break;
 
         case 'READY':
+          logger.info('EpubWebView: READY (book rendered)');
           break;
 
         case 'POSITION_CHANGE':
@@ -153,6 +177,37 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
       domStorageEnabled
       mixedContentMode="always"
       onMessage={handleMessage}
+      injectedJavaScript={`
+        (function() {
+          // Forward unhandled JS errors to React Native.
+          // Ignore "Script error." (line 0) — these are cross-origin iframe errors
+          // that epub.js triggers normally when rendering content; they are not fatal.
+          window.onerror = function(msg, src, line) {
+            if (!msg || msg === 'Script error.' || line === 0) return true;
+            try { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+              JSON.stringify({type:'ERROR', message:'JS: '+msg+' (line '+line+')'})
+            ); } catch(e) {}
+            return true;
+          };
+          // Replace the synchronous char-code loop with an async blob decode.
+          // The original atob+loop blocks the UI thread for seconds on large EPUBs.
+          window.whisper.loadBookFromBase64 = function(b64) {
+            var self = this;
+            fetch('data:application/epub+zip;base64,' + b64)
+              .then(function(r) { return r.blob(); })
+              .then(function(blob) {
+                var url = URL.createObjectURL(blob);
+                self.loadBook(url);
+              })
+              .catch(function(e) {
+                try { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+                  JSON.stringify({type:'ERROR', message:'decode failed: '+(e.message||e)})
+                ); } catch(_) {}
+              });
+          };
+        })();
+        true;
+      `}
       onError={(e) => {
         logger.error('WebView error', e.nativeEvent);
         onError?.(e.nativeEvent.description ?? 'WebView crashed');

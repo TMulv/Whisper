@@ -8,49 +8,124 @@ import {
   Alert,
   Platform,
   ActivityIndicator,
+  TextInput,
+  KeyboardAvoidingView,
+  Switch,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from '@/hooks/useTheme';
 import { ThemeName } from '@/constants/theme';
 import {
-  isAuthenticated as isDropboxAuthenticated,
-  authenticate as dropboxAuth,
-  clearTokens as clearDropboxTokens,
-} from '@/services/storage/dropboxService';
+  isAuthenticated as isGDriveAuthenticated,
+  authenticate as gdriveAuth,
+  clearTokens as clearGDriveTokens,
+} from '@/services/storage/googleDriveService';
+import {
+  isAuthenticated as isNextcloudAuthenticated,
+  saveCredentials as saveNextcloudCredentials,
+  clearCredentials as clearNextcloudCredentials,
+  testConnection as testNextcloudConnection,
+} from '@/services/storage/nextcloudService';
 import { getStorageStats } from '@/services/storage/localStorageService';
+
+const ICLOUD_ENABLED_KEY = '@whisper/icloud_enabled';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
   const { themeName, setTheme } = useTheme();
 
-  const [dropboxConnected, setDropboxConnected] = useState(false);
-  const [dropboxLoading, setDropboxLoading] = useState(false);
   const [cacheStats, setCacheStats] = useState<{ totalMb: number; fileCount: number } | null>(null);
 
+  // Google Drive
+  const [gdriveConnected, setGdriveConnected] = useState(false);
+  const [gdriveLoading, setGdriveLoading] = useState(false);
+
+  // Nextcloud
+  const [nextcloudConnected, setNextcloudConnected] = useState(false);
+  const [nextcloudLoading, setNextcloudLoading] = useState(false);
+  const [showNextcloudForm, setShowNextcloudForm] = useState(false);
+  const [ncServer, setNcServer] = useState('');
+  const [ncUsername, setNcUsername] = useState('');
+  const [ncPassword, setNcPassword] = useState('');
+
+  // iCloud (iOS only)
+  const [icloudEnabled, setIcloudEnabled] = useState(false);
+
   useEffect(() => {
-    isDropboxAuthenticated().then(setDropboxConnected);
+    isGDriveAuthenticated().then(setGdriveConnected);
+    isNextcloudAuthenticated().then(setNextcloudConnected);
     getStorageStats().then(setCacheStats);
+    if (Platform.OS === 'ios') {
+      AsyncStorage.getItem(ICLOUD_ENABLED_KEY).then((v) => setIcloudEnabled(v === 'true'));
+    }
   }, []);
 
-  const handleDropboxToggle = async () => {
-    setDropboxLoading(true);
+  // ── Google Drive ─────────────────────────────────────────────────────────────
+
+  const handleGDriveToggle = async () => {
+    setGdriveLoading(true);
     try {
-      if (dropboxConnected) {
-        await clearDropboxTokens();
-        setDropboxConnected(false);
+      if (gdriveConnected) {
+        await clearGDriveTokens();
+        setGdriveConnected(false);
       } else {
-        const success = await dropboxAuth();
-        setDropboxConnected(success);
-        if (!success) Alert.alert('Dropbox', 'Connection was cancelled or failed.');
+        const success = await gdriveAuth();
+        setGdriveConnected(success);
+        if (!success) Alert.alert('Google Drive', 'Connection was cancelled or failed.');
       }
-    } catch (err) {
-      Alert.alert('Error', 'Dropbox connection failed.');
+    } catch {
+      Alert.alert('Error', 'Google Drive connection failed.');
     } finally {
-      setDropboxLoading(false);
+      setGdriveLoading(false);
     }
   };
+
+  // ── Nextcloud ────────────────────────────────────────────────────────────────
+
+  const handleNextcloudConnect = async () => {
+    const server = ncServer.trim();
+    const username = ncUsername.trim();
+    const pass = ncPassword.trim();
+    if (!server || !username || !pass) {
+      Alert.alert('Missing Fields', 'Please fill in all three fields.');
+      return;
+    }
+    setNextcloudLoading(true);
+    try {
+      const result = await testNextcloudConnection(server, username, pass);
+      if (!result.ok) {
+        Alert.alert('Connection Failed', result.error ?? 'Could not connect to Nextcloud.');
+        return;
+      }
+      await saveNextcloudCredentials(server, username, pass);
+      setNextcloudConnected(true);
+      setShowNextcloudForm(false);
+      setNcServer('');
+      setNcUsername('');
+      setNcPassword('');
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Connection failed.');
+    } finally {
+      setNextcloudLoading(false);
+    }
+  };
+
+  const handleNextcloudDisconnect = async () => {
+    await clearNextcloudCredentials();
+    setNextcloudConnected(false);
+  };
+
+  // ── iCloud ───────────────────────────────────────────────────────────────────
+
+  const handleICloudToggle = async (value: boolean) => {
+    setIcloudEnabled(value);
+    await AsyncStorage.setItem(ICLOUD_ENABLED_KEY, value ? 'true' : 'false');
+  };
+
+  // ── Sign out ─────────────────────────────────────────────────────────────────
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -69,6 +144,7 @@ export default function SettingsScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
+      keyboardShouldPersistTaps="handled"
     >
       {/* Account */}
       <SettingsSection title="Account">
@@ -105,38 +181,129 @@ export default function SettingsScreen() {
         />
       </SettingsSection>
 
-      {/* Dropbox */}
-      <SettingsSection title="Dropbox">
-        <View style={styles.serviceRow}>
-          <View>
-            <Text style={styles.serviceLabel}>Dropbox</Text>
-            <Text style={styles.serviceStatus}>
-              {dropboxConnected ? 'Connected' : 'Not connected'}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.serviceBtn, dropboxConnected && styles.serviceBtnDisconnect]}
-            onPress={handleDropboxToggle}
-            disabled={dropboxLoading}
-            activeOpacity={0.8}
-          >
-            {dropboxLoading ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Text style={styles.serviceBtnText}>
-                {dropboxConnected ? 'Disconnect' : 'Connect'}
-              </Text>
-            )}
-          </TouchableOpacity>
-        </View>
+      {/* Google Drive */}
+      <SettingsSection title="Google Drive">
+        <ServiceRow
+          label="Google Drive"
+          connected={gdriveConnected}
+          loading={gdriveLoading}
+          onToggle={handleGDriveToggle}
+        />
+        {!gdriveConnected && (
+          <Text style={styles.serviceHint}>
+            Place books in a "Books" folder in your Google Drive. Each sub-folder should contain one .epub and one audio file.
+          </Text>
+        )}
       </SettingsSection>
 
-      {/* iCloud (iOS only) */}
+      {/* Nextcloud */}
+      <SettingsSection title="Nextcloud">
+        {nextcloudConnected ? (
+          <ServiceRow
+            label="Nextcloud"
+            connected
+            loading={false}
+            onToggle={handleNextcloudDisconnect}
+          />
+        ) : showNextcloudForm ? (
+          <KeyboardAvoidingView behavior="padding">
+            <Text style={styles.serviceHint}>
+              Use an app password from Nextcloud Settings → Security → App passwords.
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Server URL (https://cloud.example.com)"
+              placeholderTextColor="#AAA"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              value={ncServer}
+              onChangeText={setNcServer}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Username"
+              placeholderTextColor="#AAA"
+              autoCapitalize="none"
+              autoCorrect={false}
+              value={ncUsername}
+              onChangeText={setNcUsername}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="App password"
+              placeholderTextColor="#AAA"
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              value={ncPassword}
+              onChangeText={setNcPassword}
+            />
+            <View style={styles.formBtns}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setShowNextcloudForm(false)}
+              >
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.serviceBtn, nextcloudLoading && styles.btnDisabled]}
+                onPress={handleNextcloudConnect}
+                disabled={nextcloudLoading}
+                activeOpacity={0.8}
+              >
+                {nextcloudLoading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.serviceBtnText}>Connect</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        ) : (
+          <>
+            <View style={styles.serviceRow}>
+              <View>
+                <Text style={styles.serviceLabel}>Nextcloud</Text>
+                <Text style={styles.serviceStatus}>Not connected</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.serviceBtn}
+                onPress={() => setShowNextcloudForm(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.serviceBtnText}>Connect</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.serviceHint}>
+              Place books in a "Books" folder on your Nextcloud. Each sub-folder should contain one .epub and one audio file.
+            </Text>
+          </>
+        )}
+      </SettingsSection>
+
+      {/* iCloud Drive (iOS only) */}
       {Platform.OS === 'ios' && (
         <SettingsSection title="iCloud Drive">
-          <Text style={styles.icloudNote}>
-            iCloud Drive access is granted automatically when you pick a file from the Files app.
-          </Text>
+          <View style={styles.switchRow}>
+            <View>
+              <Text style={styles.serviceLabel}>iCloud Drive</Text>
+              <Text style={styles.serviceStatus}>
+                {icloudEnabled ? 'Enabled' : 'Disabled'}
+              </Text>
+            </View>
+            <Switch
+              value={icloudEnabled}
+              onValueChange={handleICloudToggle}
+              trackColor={{ false: '#D0D0D0', true: '#1A1A2E' }}
+              thumbColor="#fff"
+            />
+          </View>
+          {icloudEnabled && (
+            <Text style={styles.serviceHint}>
+              Place books in an "iCloud Drive / Whisper / Books" folder. Each sub-folder should contain one .epub and one audio file.
+            </Text>
+          )}
         </SettingsSection>
       )}
     </ScrollView>
@@ -159,6 +326,39 @@ function SettingsRow({ label, value }: { label: string; value: string }) {
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
       <Text style={styles.rowValue} numberOfLines={1}>{value}</Text>
+    </View>
+  );
+}
+
+function ServiceRow({
+  label,
+  connected,
+  loading,
+  onToggle,
+}: {
+  label: string;
+  connected: boolean;
+  loading: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <View style={styles.serviceRow}>
+      <View>
+        <Text style={styles.serviceLabel}>{label}</Text>
+        <Text style={styles.serviceStatus}>{connected ? 'Connected' : 'Not connected'}</Text>
+      </View>
+      <TouchableOpacity
+        style={[styles.serviceBtn, connected && styles.serviceBtnDisconnect]}
+        onPress={onToggle}
+        disabled={loading}
+        activeOpacity={0.8}
+      >
+        {loading ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={styles.serviceBtnText}>{connected ? 'Disconnect' : 'Connect'}</Text>
+        )}
+      </TouchableOpacity>
     </View>
   );
 }
@@ -200,12 +400,7 @@ const styles = StyleSheet.create({
   destructiveRow: { paddingVertical: 13 },
   destructiveText: { fontSize: 15, color: '#C62828', fontWeight: '500' },
 
-  // Theme picker
-  themeRow: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 12,
-  },
+  themeRow: { flexDirection: 'row', gap: 8, paddingVertical: 12 },
   themeChip: {
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -216,12 +411,17 @@ const styles = StyleSheet.create({
   themeChipText: { fontSize: 14, color: '#555', fontWeight: '500' },
   themeChipTextActive: { color: '#fff' },
 
-  // Service row
   serviceRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 12,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
   },
   serviceLabel: { fontSize: 15, fontWeight: '600', color: '#1A1A1A' },
   serviceStatus: { fontSize: 13, color: '#888', marginTop: 2 },
@@ -235,6 +435,39 @@ const styles = StyleSheet.create({
   },
   serviceBtnDisconnect: { backgroundColor: '#B71C1C' },
   serviceBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  serviceHint: {
+    fontSize: 12,
+    color: '#999',
+    lineHeight: 17,
+    paddingBottom: 12,
+  },
 
-  icloudNote: { fontSize: 13, color: '#888', lineHeight: 20, paddingVertical: 12 },
+  input: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#1A1A1A',
+    marginBottom: 8,
+    backgroundColor: '#FAFAFA',
+  },
+  formBtns: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  cancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#D0D0D0',
+    alignItems: 'center',
+  },
+  cancelBtnText: { color: '#555', fontWeight: '500', fontSize: 14 },
+  btnDisabled: { opacity: 0.6 },
 });

@@ -1,4 +1,5 @@
 import { File, Directory, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CACHE_DIR, MAX_CACHE_SIZE_MB } from '@/constants/config';
 import { bytesToMB, mbToBytes } from '@/utils/fileUtils';
@@ -50,9 +51,14 @@ export async function cacheFile(
     destFile.delete();
   }
 
-  // Copy from the picked file (file:// URI) to our cache
-  const sourceFile = new File(sourceUri);
-  sourceFile.copy(destFile);
+  // expo-file-system/next File.copy() rejects content:// URIs on Android (SAF).
+  // Use the legacy FileSystem.copyAsync which handles both schemes.
+  if (sourceUri.startsWith('content://')) {
+    await FileSystem.copyAsync({ from: sourceUri, to: destFile.uri });
+  } else {
+    const sourceFile = new File(sourceUri);
+    sourceFile.copy(destFile);
+  }
 
   const meta = await getCacheMeta();
   meta[destFile.uri] = {
@@ -103,9 +109,45 @@ export async function evictOldFiles(maxSizeMb: number = MAX_CACHE_SIZE_MB): Prom
   await setCacheMeta(meta);
 }
 
+export async function writeTextToCache(
+  text: string,
+  bookId: string,
+  type: FileType,
+  extension: string,
+): Promise<string> {
+  await ensureCacheDir();
+  const file = buildCacheFile(bookId, type, extension);
+  file.write(text);
+
+  const meta = await getCacheMeta();
+  meta[file.uri] = {
+    bookId,
+    type,
+    lastAccessedAt: Date.now(),
+    sizeBytes: file.size ?? text.length,
+  };
+  await setCacheMeta(meta);
+
+  return file.uri;
+}
+
 export async function getStorageStats(): Promise<{ totalMb: number; fileCount: number }> {
   const meta = await getCacheMeta();
   const entries = Object.values(meta);
   const totalBytes = entries.reduce((sum, v) => sum + v.sizeBytes, 0);
   return { totalMb: bytesToMB(totalBytes), fileCount: entries.length };
+}
+
+export async function deleteCachedFile(uri: string): Promise<void> {
+  try {
+    const file = new File(uri);
+    if (file.exists) file.delete();
+  } catch (err) {
+    logger.warn(`Failed to delete ${uri}`, err);
+  }
+  const meta = await getCacheMeta();
+  if (meta[uri]) {
+    delete meta[uri];
+    await setCacheMeta(meta);
+  }
 }

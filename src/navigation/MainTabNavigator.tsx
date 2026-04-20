@@ -1,5 +1,5 @@
 import React from 'react';
-import { View } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { BottomTabBar, BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -8,6 +8,7 @@ import LibraryScreen from '@/screens/library/LibraryScreen';
 import BookDetailScreen from '@/screens/library/BookDetailScreen';
 import ReaderScreen from '@/screens/reader/ReaderScreen';
 import SettingsScreen from '@/screens/settings/SettingsScreen';
+import FilesScreen from '@/screens/files/FilesScreen';
 import MiniPlayer from '@/components/player/MiniPlayer';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 
@@ -49,6 +50,12 @@ function CustomTabBar(props: BottomTabBarProps) {
   );
 }
 
+// ── Add-tab placeholder (never actually rendered; tabPress is intercepted) ──
+
+function AddTabPlaceholder() {
+  return null;
+}
+
 // ── Main tab navigator ───────────────────────────────────────────────────────
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -70,6 +77,33 @@ export default function MainTabNavigator() {
         options={{ title: 'Library' }}
       />
       <Tab.Screen
+        name="Files"
+        component={FilesScreen}
+        options={{ title: 'Files' }}
+      />
+      <Tab.Screen
+        name="Add"
+        component={AddTabPlaceholder}
+        options={{
+          tabBarLabel: 'Pair',
+          tabBarIcon: () => (
+            <View style={styles.addIcon}>
+              <Text style={styles.addIconText}>+</Text>
+            </View>
+          ),
+          tabBarAccessibilityLabel: 'Pair audiobook and ebook',
+        }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            e.preventDefault();
+            navigation.navigate('Library', {
+              screen: 'LibraryHome',
+              params: { openAdd: Date.now() },
+            });
+          },
+        })}
+      />
+      <Tab.Screen
         name="Settings"
         component={SettingsScreen}
         options={{ title: 'Settings', headerShown: true }}
@@ -77,3 +111,21 @@ export default function MainTabNavigator() {
     </Tab.Navigator>
   );
 }
+
+const styles = StyleSheet.create({
+  addIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#C9A96E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -4,
+  },
+  addIconText: {
+    color: '#09090F',
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: '300',
+  },
+});

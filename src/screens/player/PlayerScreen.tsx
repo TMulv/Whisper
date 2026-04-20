@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,9 +6,10 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  Platform,
   StatusBar,
   GestureResponderEvent,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -17,6 +18,9 @@ import { useAuth } from '@/hooks/useAuth';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { watchSyncState } from '@/services/firebase/firestoreService';
+import { writeTextToCache } from '@/services/storage/localStorageService';
+import { chaptersFromAudnexus, serializeChapters } from '@/services/audio/m4bParser';
+import { lookupChapters, lookupChaptersByAsin } from '@/services/audio/chapterLookupService';
 import { formatDuration } from '@/utils/timeUtils';
 import { FirestorePosition } from '@/types/firebase';
 import { M4BChapter } from '@/types/sync';
@@ -31,7 +35,7 @@ export default function PlayerScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { book, chapters } = useNowPlaying();
+  const { book } = useNowPlaying();
 
   const {
     isPlaying,
@@ -39,6 +43,7 @@ export default function PlayerScreen() {
     position,
     duration,
     playbackRate,
+    chapters,
     play,
     pause,
     seekTo,
@@ -46,10 +51,12 @@ export default function PlayerScreen() {
     skipForward30,
     skipBack30,
     setPlaybackRate,
+    setChapters,
   } = useAudioPlayer();
 
   const [chaptersOpen, setChaptersOpen] = useState(false);
   const [epubSyncBanner, setEpubSyncBanner] = useState<FirestorePosition | null>(null);
+  const [lookingUpChapters, setLookingUpChapters] = useState(false);
   const [scrubberWidth, setScrubberWidth] = useState(1);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
@@ -111,8 +118,88 @@ export default function PlayerScreen() {
     setChaptersOpen(false);
   };
 
+  const applyChapterResult = useCallback(async (result: Awaited<ReturnType<typeof lookupChapters>>) => {
+    if (!result) return;
+    const { chapters: audnexusChapters, asin, isAccurate } = result;
+    const preview = audnexusChapters.slice(0, 5).map((c) => `\u2022 ${c.title}`).join('\n');
+    const suffix = audnexusChapters.length > 5 ? `\n\u2026and ${audnexusChapters.length - 5} more` : '';
+    const accuracyNote = isAccurate ? '' : '\n\nNote: Audnexus flagged these timestamps as approximate.';
+    Alert.alert(
+      `Found ${audnexusChapters.length} Chapters`,
+      `${preview}${suffix}\n\nASIN: ${asin}${accuracyNote}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Apply',
+          onPress: async () => {
+            const m4bChapters = chaptersFromAudnexus(audnexusChapters);
+            const json = serializeChapters(m4bChapters);
+            await writeTextToCache(json, params.bookId, 'chapters', 'json');
+            setChapters(m4bChapters);
+            Alert.alert('Chapters Applied', `${m4bChapters.length} chapters now active.`);
+          },
+        },
+      ],
+    );
+  }, [params.bookId, setChapters]);
+
+  const promptManualAsin = useCallback(() => {
+    Alert.prompt(
+      'Enter Audible ASIN',
+      'Find it in the Audible URL: audible.com/pd/Title/BAXXXXXXXXX',
+      async (asin) => {
+        if (!asin?.trim()) return;
+        setLookingUpChapters(true);
+        try {
+          const result = await lookupChaptersByAsin(asin);
+          if (!result || result.chapters.length < 2) {
+            Alert.alert('Not Found', 'No chapter data found for that ASIN in Audnexus.');
+            return;
+          }
+          await applyChapterResult(result);
+        } catch {
+          Alert.alert('Error', 'Failed to fetch chapters. Check your connection.');
+        } finally {
+          setLookingUpChapters(false);
+        }
+      },
+      'plain-text',
+    );
+  }, [applyChapterResult]);
+
+  const handleFindChapters = async () => {
+    if (!book) return;
+    setLookingUpChapters(true);
+    try {
+      const result = await lookupChapters(book.title, book.author, book.audioPath);
+      if (!result || result.chapters.length < 2) {
+        Alert.alert(
+          'Not Found',
+          'Could not automatically find this book in Audnexus. You can enter the Audible ASIN manually.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Enter ASIN', onPress: promptManualAsin },
+          ],
+        );
+        return;
+      }
+      await applyChapterResult(result);
+    } catch {
+      Alert.alert('Error', 'Failed to look up chapters. Check your internet connection.');
+    } finally {
+      setLookingUpChapters(false);
+    }
+  };
+
   const handleOpenReader = () => {
-    navigation.goBack();
+    // Dismiss the Player modal then navigate into the nested LibraryStack → Reader
+    (navigation as any).navigate('Main', {
+      screen: 'Library',
+      params: {
+        screen: 'Reader',
+        params: { bookId: params.bookId },
+      },
+    });
   };
 
   const coverUri = book?.coverUri ?? null;
@@ -218,8 +305,30 @@ export default function PlayerScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Chapter lookup — shown when only the fallback "Track" chapter exists */}
+        {chapters.length === 1 && chapters[0]?.title === 'Track' && (
+          <View style={styles.findChaptersSection}>
+            <Text style={styles.findChaptersHeading}>No chapter markers</Text>
+            <Text style={styles.findChaptersBody}>
+              Look up real chapter timestamps from Audnexus (Audible chapter database).
+            </Text>
+            <TouchableOpacity
+              style={[styles.findChaptersBtn, lookingUpChapters && styles.btnDisabled]}
+              onPress={handleFindChapters}
+              disabled={lookingUpChapters}
+              activeOpacity={0.8}
+            >
+              {lookingUpChapters ? (
+                <ActivityIndicator size="small" color="#0D0D1A" />
+              ) : (
+                <Text style={styles.findChaptersBtnText}>Find Chapters via Audnexus</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Chapter list toggle */}
-        {chapters.length > 0 && (
+        {chapters.length > 1 && (
           <View style={styles.chapterSection}>
             <TouchableOpacity style={styles.chapterToggle} onPress={() => setChaptersOpen((v) => !v)}>
               <Text style={styles.chapterToggleText}>Chapters</Text>
@@ -453,6 +562,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
   },
+
+  findChaptersSection: {
+    width: '100%',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  findChaptersHeading: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  findChaptersBody: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  findChaptersBtn: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  findChaptersBtnText: {
+    color: '#0D0D1A',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  btnDisabled: { opacity: 0.5 },
 
   chapterSection: {
     width: '100%',

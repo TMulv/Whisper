@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import TrackPlayer, { Event, State, useTrackPlayerEvents, useProgress } from 'react-native-track-player';
+import { useState, useCallback } from 'react';
+import { State, usePlaybackState, useProgress } from 'react-native-track-player';
 import { M4BChapter } from '@/types/sync';
+import { useNowPlaying } from '@/context/NowPlayingContext';
 import {
   play,
   pause,
@@ -10,8 +11,6 @@ import {
   skipBackward,
   setRate,
 } from '@/services/audio/trackPlayerService';
-
-const TRACKED_EVENTS = [Event.PlaybackState, Event.PlaybackError];
 
 interface UseAudioPlayerReturn {
   isPlaying: boolean;
@@ -32,22 +31,14 @@ interface UseAudioPlayerReturn {
 }
 
 export function useAudioPlayer(): UseAudioPlayerReturn {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [chapters, setChapters] = useState<M4BChapter[]>([]);
+  const { chapters, setChapters } = useNowPlaying();
+  const playbackState = usePlaybackState();
+  const isPlaying = playbackState.state === State.Playing;
   const [playbackRate, setPlaybackRateState] = useState(1.0);
   const { position, duration, buffered } = useProgress();
 
-  useTrackPlayerEvents(TRACKED_EVENTS, (event) => {
-    if (event.type === Event.PlaybackState) {
-      setIsPlaying(event.state === State.Playing);
-    }
-  });
-
   const currentChapter: M4BChapter | null = chapters.length > 0
-    ? chapters.reduce((best, ch) => {
-        if (ch.startSeconds <= position) return ch;
-        return best;
-      }, chapters[0])
+    ? chapters.reduce((best, ch) => (ch.startSeconds <= position ? ch : best), chapters[0])
     : null;
 
   const handleSetRate = useCallback(async (rate: number) => {

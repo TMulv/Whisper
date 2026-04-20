@@ -1,11 +1,12 @@
 import React from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList, AuthStackParamList } from './types';
 import MainTabNavigator from './MainTabNavigator';
 import SignInScreen from '@/screens/auth/SignInScreen';
 import SignUpScreen from '@/screens/auth/SignUpScreen';
 import PlayerScreen from '@/screens/player/PlayerScreen';
+import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useAuth } from '@/hooks/useAuth';
 
 const Root = createNativeStackNavigator<RootStackParamList>();
@@ -26,7 +27,7 @@ export default function RootNavigator() {
   if (loading) {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator size="large" color="#1A1A2E" />
+        <AnimatedLoader variant="book" color="#C9A96E" size={72} message="Opening your library" />
       </View>
     );
   }
@@ -54,6 +55,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: '#09090F',
   },
 });

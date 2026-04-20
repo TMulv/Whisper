@@ -15,6 +15,5 @@ export const THEME_PREF_KEY = '@whisper/theme_pref';
 export const FONT_SIZE_KEY = '@whisper/font_size';
 export const DEVICE_ID_KEY = '@whisper/device_id';
 
-export const DROPBOX_API_BASE = 'https://api.dropboxapi.com/2';
-export const DROPBOX_CONTENT_API_BASE = 'https://content.dropboxapi.com/2';
-export const DROPBOX_FOLDER = '/Apps/Whisper';
+export const GDRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
+export const GDRIVE_BOOKS_FOLDER = 'Books';

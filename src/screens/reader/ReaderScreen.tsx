@@ -8,19 +8,21 @@ import {
   BackHandler,
   StatusBar,
   Platform,
-  ActivityIndicator,
 } from 'react-native';
+import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import EpubWebView, { EpubWebViewRef, EpubChapter, EpubTheme } from '@/components/reader/EpubWebView';
 import SyncBanner from '@/components/reader/SyncBanner';
 import ReaderControls from '@/components/reader/ReaderControls';
+import ImmersionBar from '@/components/reader/ImmersionBar';
 import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
+import { useImmersionReading } from '@/hooks/useImmersionReading';
+import { useNowPlaying } from '@/context/NowPlayingContext';
 import { readSyncState } from '@/services/firebase/firestoreService';
 import { getCachedPath } from '@/services/storage/localStorageService';
-import { File } from 'expo-file-system';
 import { EpubPosition } from '@/types/position';
 import { FirestorePosition } from '@/types/firebase';
 import { pushPosition } from '@/services/sync/syncEngine';
@@ -60,7 +62,20 @@ export default function ReaderScreen() {
   const [syncBannerData, setSyncBannerData] = useState<FirestorePosition | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState('');
+  const [immersionActive, setImmersionActive] = useState(false);
+  const [immersionRate, setImmersionRate] = useState(1.0);
 
+  const { chapters: audioChapters } = useNowPlaying();
+  const hasAudio = audioChapters.length > 0;
+
+  const immersion = useImmersionReading({
+    webViewRef,
+    audioChapters,
+    epubChapterCount: chapters.length,
+    enabled: immersionActive,
+  });
+
+  const readyRef = useRef(false);
   const { onPositionChange, loadLocalPosition } = useEpubPosition(params.bookId, user?.uid ?? null);
 
   // ── Mount: load device ID, persisted font size, initial position ───────────
@@ -69,6 +84,15 @@ export default function ReaderScreen() {
     AsyncStorage.getItem(FONT_SIZE_KEY).then((v) => {
       if (v) setFontSize(parseInt(v, 10));
     });
+
+    // Safety net: if the WebView bridge never fires BRIDGE_LOADED, surface an error
+    const timeout = setTimeout(() => {
+      if (!readyRef.current) {
+        setErrorMsg('Reader failed to initialize. Please go back and try again.');
+        setLoading(false);
+      }
+    }, 15000);
+    return () => clearTimeout(timeout);
   }, []);
 
   // ── After bridge ready: load the epub and check for audio sync position ────
@@ -76,36 +100,37 @@ export default function ReaderScreen() {
     if (!ready || !user) return;
 
     (async () => {
-      // Load epub from local cache
-      const epubUri = await getCachedPath(params.bookId, 'epub', 'epub');
-      if (!epubUri) {
-        setErrorMsg('EPUB file not found locally. Please download the book first.');
+      try {
+        logger.info('ReaderScreen: bridge ready, loading epub', { bookId: params.bookId });
+        const epubUri = await getCachedPath(params.bookId, 'epub', 'epub');
+        if (!epubUri) {
+          logger.warn('ReaderScreen: epub not cached', { bookId: params.bookId });
+          setErrorMsg('EPUB file not found locally. Please download the book first.');
+          setLoading(false);
+          return;
+        }
+
+        logger.info('ReaderScreen: handing epub uri to WebView', { uri: epubUri });
+        webViewRef.current?.loadBookFromUri(epubUri);
+
+        webViewRef.current?.setFontSize(fontSize);
+        webViewRef.current?.setTheme(theme);
+
+        const saved = await loadLocalPosition();
+        if (saved && !params.resumeFromAudio) {
+          setTimeout(() => webViewRef.current?.goTo(saved.cfi), 800);
+        }
+
+        const syncState = await readSyncState(user.uid, params.bookId);
+        if (syncState?.source === 'audio' && syncState.audioTimestamp > 0) {
+          setSyncBannerData(syncState);
+        }
+      } catch (err) {
+        logger.error('ReaderScreen: failed to load epub', err);
+        setErrorMsg('Failed to load book. Please try again.');
+      } finally {
         setLoading(false);
-        return;
       }
-
-      // Read epub as base64 and pass to WebView (file:// URIs don't work in WebView)
-      const epubFile = new File(epubUri);
-      const base64 = await epubFile.base64();
-      webViewRef.current?.loadBookBase64(base64);
-
-      // Apply saved font size and theme
-      webViewRef.current?.setFontSize(fontSize);
-      webViewRef.current?.setTheme(theme);
-
-      // Restore previous reading position (local cache)
-      const saved = await loadLocalPosition();
-      if (saved && !params.resumeFromAudio) {
-        setTimeout(() => webViewRef.current?.goTo(saved.cfi), 800);
-      }
-
-      // Check if there's a newer audio position to prompt about
-      const syncState = await readSyncState(user.uid, params.bookId);
-      if (syncState?.source === 'audio' && syncState.audioTimestamp > 0) {
-        setSyncBannerData(syncState);
-      }
-
-      setLoading(false);
     })();
   }, [ready, user, params.bookId, params.resumeFromAudio]);
 
@@ -184,7 +209,7 @@ export default function ReaderScreen() {
       {/* Epub WebView */}
       <EpubWebView
         ref={webViewRef}
-        onReady={() => setReady(true)}
+        onReady={() => { readyRef.current = true; setReady(true); }}
         onPositionChange={handlePositionChange}
         onChapterList={setChapters}
         onError={setErrorMsg}
@@ -193,7 +218,12 @@ export default function ReaderScreen() {
       {/* Loading overlay */}
       {loading && (
         <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#1A1A2E" />
+          <AnimatedLoader
+            variant="book"
+            color={theme === 'dark' ? '#C9A96E' : '#1A1A2E'}
+            size={72}
+            message="Turning to your page"
+          />
         </View>
       )}
 
@@ -264,6 +294,36 @@ export default function ReaderScreen() {
           <Text style={styles.backIconText}>‹</Text>
         </View>
       </TouchableOpacity>
+
+      {/* Immersion toggle (top-right) — only shown when audio is loaded */}
+      {hasAudio && (
+        <TouchableOpacity
+          style={[styles.immersionIcon, { top: insets.top + 8 }]}
+          onPress={() => setImmersionActive((v) => !v)}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
+          <View style={[styles.backIconBubble, immersionActive && styles.immersionIconActive]}>
+            <Text style={styles.backIconText}>{immersionActive ? '🎧' : '🎧'}</Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      {/* Immersion bar — fixed at bottom when active */}
+      {immersionActive && (
+        <View style={[styles.immersionBarContainer, { paddingBottom: insets.bottom }]}>
+          <ImmersionBar
+            theme={theme}
+            isPlaying={immersion.isPlaying}
+            position={immersion.position}
+            duration={immersion.duration}
+            currentChapter={immersion.currentAudioChapter}
+            chapters={audioChapters}
+            playbackRate={immersionRate}
+            onRateChange={setImmersionRate}
+            onClose={() => setImmersionActive(false)}
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -330,5 +390,24 @@ const styles = StyleSheet.create({
     lineHeight: 26,
     fontWeight: '300',
     marginLeft: -2,
+  },
+
+  // Immersion mode toggle
+  immersionIcon: {
+    position: 'absolute',
+    right: 12,
+    zIndex: 30,
+  },
+  immersionIconActive: {
+    backgroundColor: 'rgba(26,26,46,0.85)',
+  },
+
+  // Immersion bar anchored at bottom
+  immersionBarContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 40,
   },
 });

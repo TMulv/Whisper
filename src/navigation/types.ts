@@ -12,12 +12,14 @@ export type AuthStackParamList = {
 };
 
 export type MainTabParamList = {
-  Library: undefined;
+  Library: NavigatorScreenParams<LibraryStackParamList>;
+  Files: undefined;
+  Add: undefined;
   Settings: undefined;
 };
 
 export type LibraryStackParamList = {
-  LibraryHome: undefined;
+  LibraryHome: { openAdd?: number } | undefined;
   BookDetail: { bookId: string };
   Reader: { bookId: string; resumeFromAudio?: boolean };
 };

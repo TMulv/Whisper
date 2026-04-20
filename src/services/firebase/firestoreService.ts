@@ -1,6 +1,19 @@
-import firestore from '@react-native-firebase/firestore';
+import {
+  getFirestore,
+  doc,
+  collection,
+  setDoc,
+  getDoc,
+  getDocs,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+} from '@react-native-firebase/firestore';
 import { FirestoreBook, FirestorePosition } from '@/types/firebase';
 import { logger } from '@/utils/logger';
+
+const db = getFirestore();
 
 // ── Position writes ──────────────────────────────────────────────────────────
 
@@ -11,14 +24,10 @@ export async function writePosition(
   position: FirestorePosition,
 ): Promise<void> {
   try {
-    await firestore()
-      .collection('users')
-      .doc(userId)
-      .collection('books')
-      .doc(bookId)
-      .collection('positions')
-      .doc(deviceId)
-      .set(position);
+    await setDoc(
+      doc(db, 'users', userId, 'books', bookId, 'positions', deviceId),
+      position,
+    );
   } catch (err) {
     logger.error('writePosition failed', err);
     throw err;
@@ -31,14 +40,10 @@ export async function writeSyncState(
   position: FirestorePosition,
 ): Promise<void> {
   try {
-    await firestore()
-      .collection('users')
-      .doc(userId)
-      .collection('books')
-      .doc(bookId)
-      .collection('syncState')
-      .doc('current')
-      .set(position);
+    await setDoc(
+      doc(db, 'users', userId, 'books', bookId, 'syncState', 'current'),
+      position,
+    );
   } catch (err) {
     logger.error('writeSyncState failed', err);
     throw err;
@@ -52,15 +57,10 @@ export async function readSyncState(
   bookId: string,
 ): Promise<FirestorePosition | null> {
   try {
-    const doc = await firestore()
-      .collection('users')
-      .doc(userId)
-      .collection('books')
-      .doc(bookId)
-      .collection('syncState')
-      .doc('current')
-      .get();
-    return doc.data() ? (doc.data() as FirestorePosition) : null;
+    const snap = await getDoc(
+      doc(db, 'users', userId, 'books', bookId, 'syncState', 'current'),
+    );
+    return snap.exists() ? (snap.data() as FirestorePosition) : null;
   } catch (err) {
     logger.error('readSyncState failed', err);
     return null;
@@ -72,16 +72,10 @@ export function watchSyncState(
   bookId: string,
   callback: (position: FirestorePosition | null) => void,
 ): () => void {
-  return firestore()
-    .collection('users')
-    .doc(userId)
-    .collection('books')
-    .doc(bookId)
-    .collection('syncState')
-    .doc('current')
-    .onSnapshot((doc) => {
-      callback(doc.data() ? (doc.data() as FirestorePosition) : null);
-    });
+  return onSnapshot(
+    doc(db, 'users', userId, 'books', bookId, 'syncState', 'current'),
+    (snap) => callback(snap.exists() ? (snap.data() as FirestorePosition) : null),
+  );
 }
 
 // ── Book CRUD ────────────────────────────────────────────────────────────────
@@ -91,29 +85,18 @@ export async function writeBook(
   bookId: string,
   book: FirestoreBook,
 ): Promise<void> {
-  await firestore()
-    .collection('users')
-    .doc(userId)
-    .collection('books')
-    .doc(bookId)
-    .set(book);
+  await setDoc(doc(db, 'users', userId, 'books', bookId), book);
 }
 
 export async function deleteBook(userId: string, bookId: string): Promise<void> {
-  await firestore()
-    .collection('users')
-    .doc(userId)
-    .collection('books')
-    .doc(bookId)
-    .delete();
+  await deleteDoc(doc(db, 'users', userId, 'books', bookId));
 }
 
 export async function listBooks(userId: string): Promise<Array<FirestoreBook & { id: string }>> {
-  const snapshot = await firestore()
-    .collection('users')
-    .doc(userId)
-    .collection('books')
-    .orderBy('updatedAt', 'desc')
-    .get();
-  return snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as FirestoreBook) }));
+  const q = query(
+    collection(db, 'users', userId, 'books'),
+    orderBy('updatedAt', 'desc'),
+  );
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as FirestoreBook) }));
 }
