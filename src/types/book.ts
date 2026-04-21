@@ -1,4 +1,4 @@
-export type SyncMode = 'chapter' | 'percentage' | 'aeneas';
+export type SyncMode = 'chapter' | 'percentage';
 export type StorageProvider = 'googledrive' | 'nextcloud' | 'icloud' | 'local';
 
 export interface BookMetadata {

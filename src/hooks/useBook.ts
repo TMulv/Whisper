@@ -1,12 +1,55 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { File } from 'expo-file-system';
-import { LocalBook } from '@/types/book';
+import { LocalBook, SyncMode } from '@/types/book';
 import { listBooks, writeBook, deleteBook } from '@/services/firebase/firestoreService';
 import { localListBooks, localWriteBook, localDeleteBook } from '@/services/book/localBookStore';
 import { fetchBookCover } from '@/services/book/coverLookupService';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { logger } from '@/utils/logger';
 import { getBookDisplay } from '@/utils/bookDisplay';
+
+// ── One-shot migration: drop the `aeneas` SyncMode ─────────────────────────
+// Legacy books may have `syncMode: 'aeneas'` — the standalone Mac-side
+// aeneas workflow is replaced by on-device Whisper + the cloud worker.
+// Rewrite to 'chapter' (the safe default that works for every book) on
+// first read. Firestore rewrite is fire-and-forget so offline clients
+// still get the local fix immediately.
+//
+// `SyncMode` no longer includes 'aeneas', so we take `unknown` and narrow
+// to avoid a never-matching comparison at the type level.
+const migrationsRun = new Set<string>();
+
+async function migrateAeneasSyncMode(
+  userId: string,
+  books: ReadonlyArray<{ id: string; syncMode: string }>,
+): Promise<void> {
+  if (migrationsRun.has(userId)) return;
+  migrationsRun.add(userId);
+
+  const stale = books.filter((b) => b.syncMode === 'aeneas');
+  if (stale.length === 0) return;
+
+  logger.info('Migrating legacy aeneas syncMode to chapter', {
+    userId,
+    count: stale.length,
+  });
+
+  for (const b of stale) {
+    const migrated = {
+      ...(b as unknown as Parameters<typeof localWriteBook>[2]),
+      syncMode: 'chapter' as SyncMode,
+      updatedAt: Date.now(),
+    };
+    try {
+      await localWriteBook(userId, b.id, migrated);
+    } catch (err) {
+      logger.warn('aeneas migration: local write failed', err);
+    }
+    writeBook(userId, b.id, migrated).catch((err) =>
+      logger.warn('aeneas migration: firestore write failed', err),
+    );
+  }
+}
 
 function fileExists(uri: string | null | undefined): boolean {
   if (!uri) return false;
@@ -109,7 +152,11 @@ export function useBooks(userId: string | null) {
       return;
     }
 
-    type BookRow = { id: string; title: string; author: string; coverUrl?: string | null; epubPath: string; audioPath: string; syncMapPath: string | null; syncMode: LocalBook['syncMode']; totalChapters: number; totalDurationSeconds: number; addedAt: number; updatedAt: number };
+    // BookRow.syncMode is `string` (not `SyncMode`) because legacy rows
+    // may still carry 'aeneas' before the migration below rewrites them.
+    type BookRow = { id: string; title: string; author: string; coverUrl?: string | null; epubPath: string; audioPath: string; syncMapPath: string | null; syncMode: string; totalChapters: number; totalDurationSeconds: number; addedAt: number; updatedAt: number };
+    const normalizeSyncMode = (raw: string): SyncMode =>
+      raw === 'percentage' ? 'percentage' : 'chapter';
     const toLocalBook = (b: BookRow): LocalBook => ({
       id: b.id,
       title: b.title,
@@ -119,7 +166,7 @@ export function useBooks(userId: string | null) {
       audioPath: b.audioPath,
       syncMapPath: b.syncMapPath,
       storageProvider: 'local',
-      syncMode: b.syncMode,
+      syncMode: normalizeSyncMode(b.syncMode),
       totalChapters: b.totalChapters,
       totalDurationSeconds: b.totalDurationSeconds,
       addedAt: b.addedAt,
@@ -141,6 +188,11 @@ export function useBooks(userId: string | null) {
     // Load from local store immediately so the UI is never blocked by network
     localListBooks(userId)
       .then(async (stored) => {
+        // Run the aeneas→chapter migration on the raw stored rows before
+        // normalizing — the migration rewrites both local + Firestore
+        // copies; toLocalBook then downgrades any still-stale values so
+        // the in-memory state is always clean.
+        await migrateAeneasSyncMode(userId, stored);
         const localBooks = stored.map(toLocalBook);
         const pruned = await pruneMissingBooks(userId, localBooks);
         applyPruned(pruned, localBooks);

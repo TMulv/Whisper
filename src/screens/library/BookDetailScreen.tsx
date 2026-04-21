@@ -66,11 +66,6 @@ const SYNC_MODES: { value: SyncMode; label: string; description: string }[] = [
     label: 'Percentage',
     description: 'Sync by % complete — good fallback for mismatched chapters.',
   },
-  {
-    value: 'aeneas',
-    label: 'Word-level',
-    description: 'Precise sync — requires running aeneas on your Mac first.',
-  },
 ];
 
 export default function BookDetailScreen() {
@@ -84,7 +79,6 @@ export default function BookDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [loadingAudio, setLoadingAudio] = useState(false);
   const [syncMode, setSyncMode] = useState<SyncMode>('chapter');
-  const [hasSyncMap, setHasSyncMap] = useState(false);
   const [chapterFileExists, setChapterFileExists] = useState(false);
   const [lookingUpChapters, setLookingUpChapters] = useState(false);
   const [coverPickerVisible, setCoverPickerVisible] = useState(false);
@@ -109,7 +103,6 @@ export default function BookDetailScreen() {
       if (found) {
         setBook(found);
         setSyncMode(found.syncMode);
-        setHasSyncMap(!!found.syncMapPath);
         if (!found.coverUrl) setCoverPickerVisible(true);
       }
       const chaptersUri = await getCachedPath(params.bookId, 'chapters', 'json');
@@ -544,28 +537,20 @@ export default function BookDetailScreen() {
             </View>
             {SYNC_MODES.map((mode) => {
               const isSelected = syncMode === mode.value;
-              const isDisabled = mode.value === 'aeneas' && !hasSyncMap;
               return (
                 <TouchableOpacity
                   key={mode.value}
-                  style={[
-                    styles.syncOption,
-                    isDisabled && styles.syncOptionDisabled,
-                  ]}
-                  onPress={() => !isDisabled && handleSaveSyncMode(mode.value)}
-                  disabled={isDisabled || saving}
+                  style={styles.syncOption}
+                  onPress={() => handleSaveSyncMode(mode.value)}
+                  disabled={saving}
                   activeOpacity={0.75}
                 >
                   <View style={[styles.syncRadio, isSelected && styles.syncRadioActive]}>
                     {isSelected && <View style={styles.syncRadioFill} />}
                   </View>
                   <View style={styles.syncTextWrap}>
-                    <Text style={[styles.syncLabelText, isDisabled && styles.dimText]}>
-                      {mode.label}{isDisabled ? ' — requires sync_map.json' : ''}
-                    </Text>
-                    <Text style={[styles.syncDesc, isDisabled && styles.dimText]}>
-                      {mode.description}
-                    </Text>
+                    <Text style={styles.syncLabelText}>{mode.label}</Text>
+                    <Text style={styles.syncDesc}>{mode.description}</Text>
                   </View>
                 </TouchableOpacity>
               );
@@ -839,7 +824,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: C.border,
   },
-  syncOptionDisabled: { opacity: 0.35 },
   syncRadio: {
     width: 18,
     height: 18,
