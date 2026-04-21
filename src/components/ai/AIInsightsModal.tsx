@@ -43,11 +43,19 @@ interface Props {
   onClose: () => void;
   chapterContext: AIChapterContext;
   /**
-   * Returns the plain-text of the chapter that corresponds to chapterContext.
-   * If null/undefined, we fall back to metadata-only reasoning.
+   * Returns the plain-text of the chapter (or concatenated chapters) to feed
+   * the AI for the active prompt. Receives the prompt id so the caller can
+   * load different text for "story so far" vs "jump ahead" vs a chapter recap.
+   * Return null for metadata-only reasoning.
    */
-  loadChapterText?: () => Promise<string | null>;
+  loadChapterText?: (promptId: AIPromptId) => Promise<string | null>;
   onOpenSettings?: () => void;
+  /**
+   * When set, the modal skips the prompt menu and auto-runs this prompt as
+   * soon as it opens. Back button closes the modal instead of returning to
+   * the menu.
+   */
+  autoRunPromptId?: AIPromptId;
 }
 
 type ModalView = 'menu' | 'result';
@@ -58,6 +66,7 @@ export default function AIInsightsModal({
   chapterContext,
   loadChapterText,
   onOpenSettings,
+  autoRunPromptId,
 }: Props) {
   const insets = useSafeAreaInsets();
 
@@ -107,7 +116,7 @@ export default function AIInsightsModal({
       if (loadChapterText) {
         try {
           setFetchingText(true);
-          chapterText = await loadChapterText();
+          chapterText = await loadChapterText(id);
         } catch {
           chapterText = null;
         } finally {
@@ -150,8 +159,21 @@ export default function AIInsightsModal({
     [chapterContext, loadChapterText],
   );
 
+  // Auto-run a prompt when modal opens with autoRunPromptId set
+  useEffect(() => {
+    if (!visible || !autoRunPromptId || keyPresent !== true) return;
+    if (activePromptId === autoRunPromptId) return;
+    startPrompt(autoRunPromptId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, keyPresent, autoRunPromptId]);
+
   const handleBack = () => {
     abortRef.current?.abort();
+    if (autoRunPromptId) {
+      // In auto-run mode there is no menu to go back to — close instead.
+      onClose();
+      return;
+    }
     setView('menu');
     setResponse('');
     setErrorMsg(null);
@@ -209,9 +231,9 @@ export default function AIInsightsModal({
           {/* API key gate */}
           {keyPresent === false && (
             <View style={styles.keyGate}>
-              <Text style={styles.keyGateTitle}>Add your Anthropic API key</Text>
+              <Text style={styles.keyGateTitle}>Add an AI API key</Text>
               <Text style={styles.keyGateBody}>
-                Insights are powered by Claude. Grab a key from console.anthropic.com — it's free to create and you only pay for what you use (pennies per chapter).
+                Insights need a key from Claude, ChatGPT, or Gemini. Pick a provider in Settings and paste your key — you only pay for what you use (pennies per chapter).
               </Text>
               <TouchableOpacity
                 style={styles.primaryBtn}
@@ -323,9 +345,11 @@ export default function AIInsightsModal({
                   <TouchableOpacity style={styles.secondaryBtn} onPress={regenerate} activeOpacity={0.8}>
                     <Text style={styles.secondaryBtnText}>Try again</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.secondaryBtn} onPress={handleBack} activeOpacity={0.8}>
-                    <Text style={styles.secondaryBtnText}>New prompt</Text>
-                  </TouchableOpacity>
+                  {!autoRunPromptId && (
+                    <TouchableOpacity style={styles.secondaryBtn} onPress={handleBack} activeOpacity={0.8}>
+                      <Text style={styles.secondaryBtnText}>New prompt</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             </ScrollView>

@@ -5,7 +5,10 @@ export type AIPromptId =
   | 'themes'
   | 'characters'
   | 'vocabulary'
-  | 'custom';
+  | 'custom'
+  | 'left_off_recap'
+  | 'story_so_far'
+  | 'jump_ahead';
 
 export interface AIPromptSpec {
   id: AIPromptId;
@@ -99,6 +102,30 @@ export const AI_PROMPTS: AIPromptSpec[] = [
     description: 'Your own question about the chapter.',
     userMessage: (ctx) =>
       `${chapterHeader(ctx)}\n\nReader's question:\n${ctx.userQuestion?.trim() || '(no question provided)'}\n\nAnswer their question grounded in the chapter. If the chapter doesn't address it, say so and then give your best contextual answer.`,
+  },
+  {
+    id: 'left_off_recap',
+    icon: '📍',
+    title: 'Where I left off',
+    description: 'Refresh me on the chapter I stopped in.',
+    userMessage: (ctx) =>
+      `${chapterHeader(ctx)}\n\nThe reader paused partway through this chapter and is coming back to it. Give them a 4–6 sentence refresher on what's happening in this chapter so they can jump back in — focus on the active situation, who's involved, and the emotional tone. End with a one-line "you stopped around…" anchor based on the chapter's arc. Do not summarize what comes after.`,
+  },
+  {
+    id: 'story_so_far',
+    icon: '📚',
+    title: "What's happened so far",
+    description: 'The story up to where I am now.',
+    userMessage: (ctx) =>
+      `${chapterHeader(ctx)}\n\nThe reader has finished chapters 1 through ${ctx.chapterIndex + 1} and wants a cumulative recap of everything that has happened so far. Give a tight narrative summary (roughly 8–12 sentences) covering the main plot arc, who the central characters are and where they stand, and the key turns or shifts. Do NOT reference or hint at anything beyond chapter ${ctx.chapterIndex + 1}.`,
+  },
+  {
+    id: 'jump_ahead',
+    icon: '⏭️',
+    title: 'Jump ahead preview',
+    description: 'A spoiler-light teaser of what comes next.',
+    userMessage: (ctx) =>
+      `${chapterHeader(ctx)}\n\nThe reader is about to start the next chapter (chapter ${ctx.chapterIndex + 2} of ${ctx.totalChapters}) and wants a spoiler-light preview: enough to orient them on setting, tone, and which characters appear, without revealing key twists, reveals, or the chapter's resolution. 3–5 sentences. If you don't have the next chapter's text, say so and reason lightly from the book's arc.`,
   },
 ];
 

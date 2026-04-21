@@ -31,13 +31,17 @@ import {
 import { getStorageStats } from '@/services/storage/localStorageService';
 import * as WebBrowser from 'expo-web-browser';
 import {
-  getApiKey as getAiApiKey,
-  saveApiKey as saveAiApiKey,
-  clearApiKey as clearAiApiKey,
-  getModel as getAiModel,
-  saveModel as saveAiModel,
-  AI_MODELS,
-  type AIModelId,
+  getApiKeyFor,
+  saveApiKeyFor,
+  clearApiKeyFor,
+  getProvider,
+  setProvider,
+  getProviderSpec,
+  getModelFor,
+  saveModelFor,
+  resetModelFor,
+  AI_PROVIDERS,
+  type AIProvider,
 } from '@/services/ai/aiStorage';
 import {
   getOfflineOnly as getDictOfflineOnly,
@@ -77,12 +81,16 @@ export default function SettingsScreen() {
   // iCloud (iOS only)
   const [icloudEnabled, setIcloudEnabled] = useState(false);
 
-  // AI (Claude)
+  // AI
+  const [aiProvider, setAiProviderState] = useState<AIProvider>('claude');
   const [aiKeyMasked, setAiKeyMasked] = useState<string | null>(null);
   const [aiKeyInput, setAiKeyInput] = useState('');
   const [aiKeyVisible, setAiKeyVisible] = useState(false);
   const [aiKeySaving, setAiKeySaving] = useState(false);
-  const [aiModel, setAiModelState] = useState<AIModelId>('claude-haiku-4-5-20251001');
+  const [aiModel, setAiModelState] = useState<string>('');
+  const [aiAdvancedOpen, setAiAdvancedOpen] = useState(false);
+
+  const aiProviderSpec = getProviderSpec(aiProvider);
 
   // Dictionary (offline)
   const [dictOfflineOnly, setDictOfflineOnlyState] = useState(false);
@@ -96,8 +104,12 @@ export default function SettingsScreen() {
     getStorageStats().then(setCacheStats);
     getDictOfflineOnly().then(setDictOfflineOnlyState);
     getDictCachedCount().then(setDictCachedCount);
-    getAiApiKey().then((k) => setAiKeyMasked(k ? maskKey(k) : null));
-    getAiModel().then(setAiModelState);
+    getProvider().then(async (p) => {
+      setAiProviderState(p);
+      const [k, m] = await Promise.all([getApiKeyFor(p), getModelFor(p)]);
+      setAiKeyMasked(k ? maskKey(k) : null);
+      setAiModelState(m);
+    });
     if (Platform.OS === 'ios') {
       AsyncStorage.getItem(ICLOUD_ENABLED_KEY).then((v) => setIcloudEnabled(v === 'true'));
     }
@@ -105,14 +117,31 @@ export default function SettingsScreen() {
 
   // ── AI ───────────────────────────────────────────────────────────────────────
 
+  const handlePickAiProvider = async (p: AIProvider) => {
+    if (p === aiProvider) return;
+    setAiProviderState(p);
+    await setProvider(p);
+    const [k, m] = await Promise.all([getApiKeyFor(p), getModelFor(p)]);
+    setAiKeyMasked(k ? maskKey(k) : null);
+    setAiModelState(m);
+    setAiKeyInput('');
+    setAiKeyVisible(false);
+    setAiAdvancedOpen(false);
+  };
+
   const handleSaveAiKey = async () => {
     const k = aiKeyInput.trim();
     if (!k) return;
-    if (!k.startsWith('sk-ant-')) {
-      Alert.alert('Unusual key', 'Anthropic keys usually start with "sk-ant-". Save anyway?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Save', onPress: () => doSaveAiKey(k) },
-      ]);
+    const prefix = aiProviderSpec.keyPrefixHint;
+    if (prefix && !k.startsWith(prefix)) {
+      Alert.alert(
+        'Unusual key',
+        `${aiProviderSpec.label} keys usually start with "${prefix}". Save anyway?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Save', onPress: () => doSaveAiKey(k) },
+        ],
+      );
       return;
     }
     await doSaveAiKey(k);
@@ -121,7 +150,7 @@ export default function SettingsScreen() {
   const doSaveAiKey = async (k: string) => {
     setAiKeySaving(true);
     try {
-      await saveAiApiKey(k);
+      await saveApiKeyFor(aiProvider, k);
       setAiKeyMasked(maskKey(k));
       setAiKeyInput('');
       setAiKeyVisible(false);
@@ -139,20 +168,25 @@ export default function SettingsScreen() {
         text: 'Remove',
         style: 'destructive',
         onPress: async () => {
-          await clearAiApiKey();
+          await clearApiKeyFor(aiProvider);
           setAiKeyMasked(null);
         },
       },
     ]);
   };
 
-  const handlePickAiModel = async (id: AIModelId) => {
+  const handlePickAiModel = async (id: string) => {
     setAiModelState(id);
-    await saveAiModel(id);
+    await saveModelFor(aiProvider, id);
   };
 
-  const handleOpenAnthropicConsole = async () => {
-    await WebBrowser.openBrowserAsync('https://console.anthropic.com/settings/keys');
+  const handleResetAiModel = async () => {
+    await resetModelFor(aiProvider);
+    setAiModelState(aiProviderSpec.defaultModel);
+  };
+
+  const handleOpenAiConsole = async () => {
+    await WebBrowser.openBrowserAsync(aiProviderSpec.consoleUrl);
   };
 
   // ── Google Drive ─────────────────────────────────────────────────────────────
@@ -354,16 +388,37 @@ export default function SettingsScreen() {
         )}
       </SettingsSection>
 
-      {/* AI Insights (Claude) */}
+      {/* AI Insights */}
       <SettingsSection title="AI Insights">
         <Text style={styles.serviceHint}>
-          Chapter recaps, metaphors, book-club questions and more — powered by Claude. Bring your own Anthropic API key. You only pay for what you use (typically pennies per chapter).
+          Chapter recaps, metaphors, book-club questions and more. Pick a provider and bring your own API key — you only pay for what you use (typically pennies per chapter).
         </Text>
+
+        <Text style={[styles.rowLabel, { marginBottom: 8 }]}>Provider</Text>
+        <View style={styles.themeRow}>
+          {AI_PROVIDERS.map((p) => (
+            <TouchableOpacity
+              key={p.id}
+              style={[styles.themeChip, aiProvider === p.id && styles.themeChipActive]}
+              onPress={() => handlePickAiProvider(p.id)}
+              activeOpacity={0.75}
+            >
+              <Text
+                style={[
+                  styles.themeChipText,
+                  aiProvider === p.id && styles.themeChipTextActive,
+                ]}
+              >
+                {p.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
 
         {aiKeyMasked ? (
           <View style={styles.serviceRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.serviceLabel}>API key</Text>
+              <Text style={styles.serviceLabel}>{aiProviderSpec.label} API key</Text>
               <Text style={styles.serviceStatus}>{aiKeyMasked}</Text>
             </View>
             <TouchableOpacity
@@ -379,7 +434,7 @@ export default function SettingsScreen() {
             <View style={styles.aiKeyInputRow}>
               <TextInput
                 style={[styles.input, { flex: 1, marginBottom: 0 }]}
-                placeholder="sk-ant-…"
+                placeholder={aiProviderSpec.keyPlaceholder}
                 placeholderTextColor="#AAA"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -396,7 +451,7 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             </View>
             <View style={styles.formBtns}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={handleOpenAnthropicConsole}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={handleOpenAiConsole}>
                 <Text style={styles.cancelBtnText}>Get a key</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -415,26 +470,51 @@ export default function SettingsScreen() {
           </KeyboardAvoidingView>
         )}
 
-        <Text style={[styles.rowLabel, { marginTop: 14, marginBottom: 4 }]}>Model</Text>
-        {AI_MODELS.map((m) => {
-          const active = aiModel === m.id;
-          return (
-            <TouchableOpacity
-              key={m.id}
-              style={[styles.aiModelRow, active && styles.aiModelRowActive]}
-              onPress={() => handlePickAiModel(m.id)}
-              activeOpacity={0.75}
-            >
-              <View style={[styles.radio, active && styles.radioActive]}>
-                {active && <View style={styles.radioFill} />}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.aiModelLabel}>{m.label}</Text>
-                <Text style={styles.aiModelDesc}>{m.tagline}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
+        <TouchableOpacity
+          style={styles.advancedToggle}
+          onPress={() => setAiAdvancedOpen((v) => !v)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.advancedToggleText}>
+            {aiAdvancedOpen ? '▾  Advanced' : '▸  Advanced'}
+          </Text>
+        </TouchableOpacity>
+
+        {aiAdvancedOpen && (
+          <View>
+            <Text style={styles.serviceHint}>
+              By default, {aiProviderSpec.label} uses the balanced model. Override it here if you want something faster or more capable.
+            </Text>
+            {aiProviderSpec.models.map((m) => {
+              const active = aiModel === m.id;
+              const isDefault = m.id === aiProviderSpec.defaultModel;
+              return (
+                <TouchableOpacity
+                  key={m.id}
+                  style={[styles.aiModelRow, active && styles.aiModelRowActive]}
+                  onPress={() => handlePickAiModel(m.id)}
+                  activeOpacity={0.75}
+                >
+                  <View style={[styles.radio, active && styles.radioActive]}>
+                    {active && <View style={styles.radioFill} />}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.aiModelLabel}>
+                      {m.label}
+                      {isDefault ? '  ·  Default' : ''}
+                    </Text>
+                    <Text style={styles.aiModelDesc}>{m.tagline}</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+            {aiModel !== aiProviderSpec.defaultModel && (
+              <TouchableOpacity style={styles.resetRow} onPress={handleResetAiModel}>
+                <Text style={styles.resetRowText}>Reset to default</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </SettingsSection>
 
       {/* Storage */}
@@ -763,4 +843,14 @@ const styles = StyleSheet.create({
   },
   radioActive: { borderColor: '#1A1A2E' },
   radioFill: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#1A1A2E' },
+
+  advancedToggle: {
+    paddingVertical: 12,
+    marginTop: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#F0F0F0',
+  },
+  advancedToggleText: { fontSize: 13, color: '#555', fontWeight: '600' },
+  resetRow: { paddingVertical: 10, paddingHorizontal: 4 },
+  resetRowText: { fontSize: 13, color: '#1A1A2E', fontWeight: '500' },
 });
