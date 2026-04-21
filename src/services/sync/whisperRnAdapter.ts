@@ -16,6 +16,7 @@
 // exits cleanly instead of crashing.
 
 import { File, Directory, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
 import { logger } from '@/utils/logger';
 import {
   WhisperAdapter,
@@ -94,12 +95,17 @@ async function getContext(model: ModelSpec): Promise<WhisperContext> {
     if (!rn) throw new Error('whisper.rn not linked in this build');
     const path = await ensureModelDownloaded(model);
     logger.info('Initialising Whisper context', { path });
+    // GPU acceleration (Metal) is only available on physical iOS devices.
+    // On the simulator both flags must be false or initWhisper may throw.
+    // Platform.constants.MODEL_ID is undefined on simulator; it carries
+    // a hardware identifier on real devices.
+    const isPhysicalDevice =
+      Platform.OS === 'ios' &&
+      typeof (Platform.constants as Record<string, unknown>).MODEL_ID === 'string';
     const ctx = await rn.initWhisper({
       filePath: path,
-      // Let whisper.rn pick the best backend for the platform. GPU on iOS
-      // (Metal) is a large speedup; Android stays on CPU.
-      useGpu: true,
-      useFlashAttn: true,
+      useGpu: isPhysicalDevice,
+      useFlashAttn: isPhysicalDevice,
     });
     return ctx;
   })();
