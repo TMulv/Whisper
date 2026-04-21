@@ -356,6 +356,22 @@ export default function ReaderScreen() {
     return () => sub.remove();
   }, [navigation]);
 
+  // ── Hide the parent tab bar while reader is focused ───────────────────────
+  useEffect(() => {
+    const parent = navigation.getParent();
+    parent?.setOptions({ tabBarStyle: { display: 'none' } });
+    return () => {
+      parent?.setOptions({
+        tabBarStyle: {
+          borderTopWidth: 0,
+          backgroundColor: '#FAF7F1',
+          height: 64 + (Platform.OS === 'ios' ? 18 : 0),
+          paddingTop: 6,
+        },
+      });
+    };
+  }, [navigation]);
+
   // ── Callbacks ─────────────────────────────────────────────────────────────
   const handlePositionChange = useCallback(
     (position: EpubPosition, programmatic: boolean) => {
