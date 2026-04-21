@@ -19,7 +19,15 @@ export type MainTabParamList = {
 };
 
 export type LibraryStackParamList = {
-  LibraryHome: { openAdd?: number } | undefined;
+  LibraryHome:
+    | {
+        openAdd?: number;
+        /** File delivered by iOS "Open with" / share sheet. LibraryScreen
+         *  caches the file and pre-populates AddBookModal for the matching
+         *  slot, leaving the other slot for the user to fill in. */
+        incomingFile?: { uri: string; name: string; kind: 'audio' | 'epub' };
+      }
+    | undefined;
   BookDetail: { bookId: string };
   Reader: { bookId: string; resumeFromAudio?: boolean };
 };

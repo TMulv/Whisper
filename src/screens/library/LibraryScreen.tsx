@@ -50,7 +50,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { LibraryStackParamList } from '@/navigation/types';
 import * as Crypto from 'expo-crypto';
-import { buildCachePath, ensureCacheDir } from '@/services/storage/localStorageService';
+import { buildCachePath, cacheFile, ensureCacheDir } from '@/services/storage/localStorageService';
+import { takePendingImport } from '@/services/pendingImportStore';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
 import BookSyncIndicator from '@/components/library/BookSyncIndicator';
@@ -456,6 +457,13 @@ export default function LibraryScreen() {
   const [hasGDrive, setHasGDrive] = useState(false);
   const [hasICloud, setHasICloud] = useState(false);
   const [pendingBookId, setPendingBookId] = useState(() => Crypto.randomUUID());
+  /** Pre-selected file from an "Open with" / share-sheet action. Passed to
+   *  AddBookModal so the matching slot is already filled in. */
+  const [preselectedIncoming, setPreselectedIncoming] = useState<{
+    kind: 'audio' | 'epub';
+    uri: string;
+    name: string;
+  } | null>(null);
   const insets = useSafeAreaInsets();
 
   const handleOpenModal = useCallback(async () => {
@@ -471,6 +479,37 @@ export default function LibraryScreen() {
     setModalVisible(true);
   }, []);
 
+  /** Handle a file delivered via iOS "Open with" or the simulator drag-and-drop.
+   *  Copies the file to the local cache, opens AddBookModal, and pre-populates
+   *  the matching slot so the user only needs to supply the other file. */
+  const handleIncomingFile = useCallback(
+    async (incoming: { uri: string; name: string; kind: 'audio' | 'epub' }) => {
+      if (!user) return;
+      const bookId = Crypto.randomUUID();
+      const [nc, gd, icloudPref] = await Promise.all([
+        isNextcloudAuthenticated(),
+        isGDriveAuthenticated(),
+        AsyncStorage.getItem(ICLOUD_ENABLED_KEY),
+      ]);
+      setHasNextcloud(nc);
+      setHasGDrive(gd);
+      setHasICloud(isICloudAvailable() && icloudPref === 'true');
+      setPendingBookId(bookId);
+      try {
+        const ext = incoming.name.split('.').pop() ?? (incoming.kind === 'audio' ? 'm4b' : 'epub');
+        const fileType = incoming.kind === 'audio' ? 'audio' : 'epub';
+        const cachedUri = await cacheFile(incoming.uri, bookId, fileType, ext);
+        setPreselectedIncoming({ kind: incoming.kind, uri: cachedUri, name: incoming.name });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        Alert.alert('Import Error', `Could not read the incoming file.\n\n${msg}`);
+      }
+      setModalVisible(true);
+    },
+    [user],
+  );
+
+  // ── openAdd route-param signal ─────────────────────────────────────────────
   const openAddSignal = route.params?.openAdd;
   useEffect(() => {
     if (!openAddSignal) return;
@@ -478,12 +517,29 @@ export default function LibraryScreen() {
     navigation.setParams({ openAdd: undefined });
   }, [openAddSignal, handleOpenModal, navigation]);
 
-  // Refetch books when the library comes back into focus so deletions
-  // performed in BookDetail or elsewhere are reflected here.
+  // ── incomingFile route-param signal ───────────────────────────────────────
+  // Delivered by App.tsx's Linking listener when iOS routes a file to Whisper.
+  const incomingFileParam = route.params?.incomingFile;
+  useEffect(() => {
+    if (!incomingFileParam) return;
+    navigation.setParams({ incomingFile: undefined }); // consume immediately
+    handleIncomingFile(incomingFileParam);
+  }, [incomingFileParam, handleIncomingFile, navigation]);
+
+  // ── pendingImportStore check on focus ──────────────────────────────────────
+  // Handles the case where the file arrived before navigation was ready
+  // (cold start) or before LibraryScreen was mounted (e.g. after login).
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => {
-      refreshBooks();
+      const pending = takePendingImport();
+      if (pending) handleIncomingFile(pending);
     });
+    return unsub;
+  }, [navigation, handleIncomingFile]);
+
+  // Refetch books on focus (deletions in BookDetail should be reflected here).
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', refreshBooks);
     return unsub;
   }, [navigation, refreshBooks]);
 
@@ -880,7 +936,10 @@ export default function LibraryScreen() {
 
       <AddBookModal
         visible={modalVisible}
-        onClose={() => setModalVisible(false)}
+        onClose={() => {
+          setModalVisible(false);
+          setPreselectedIncoming(null);
+        }}
         onPickEpub={handlePickEpub}
         onPickAudio={handlePickAudio}
         onConfirm={handleConfirm}
@@ -891,6 +950,7 @@ export default function LibraryScreen() {
         onImportGoogleDrive={handleImportGDrive}
         hasICloud={hasICloud}
         onImportICloud={handleImportICloud}
+        initialSelection={preselectedIncoming}
       />
     </View>
   );

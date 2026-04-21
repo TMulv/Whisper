@@ -1,4 +1,5 @@
 import { ExpoConfig, ConfigContext } from 'expo/config';
+import { withInfoPlist } from '@expo/config-plugins';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -54,6 +55,55 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         iCloudContainerEnvironment: 'Production',
       },
     ],
+    // Register Whisper as a handler for audiobook (.m4b) and ebook (.epub)
+    // files so iOS routes them here instead of to Messages or Files.
+    (config: ExpoConfig) =>
+      withInfoPlist(config, (c) => {
+        c.modResults.CFBundleDocumentTypes = [
+          {
+            CFBundleTypeName: 'M4B Audiobook',
+            CFBundleTypeRole: 'Viewer',
+            LSItemContentTypes: ['com.apple.m4b-audio'],
+            CFBundleTypeExtensions: ['m4b'],
+            LSHandlerRank: 'Alternate',
+          },
+          {
+            CFBundleTypeName: 'MPEG-4 Audio',
+            CFBundleTypeRole: 'Viewer',
+            LSItemContentTypes: ['public.mpeg-4-audio'],
+            CFBundleTypeExtensions: ['m4a'],
+            LSHandlerRank: 'Alternate',
+          },
+          {
+            CFBundleTypeName: 'MP3 Audio',
+            CFBundleTypeRole: 'Viewer',
+            LSItemContentTypes: ['public.mp3'],
+            CFBundleTypeExtensions: ['mp3'],
+            LSHandlerRank: 'Alternate',
+          },
+          {
+            CFBundleTypeName: 'EPUB Document',
+            CFBundleTypeRole: 'Viewer',
+            LSItemContentTypes: ['org.idpf.epub-container'],
+            CFBundleTypeExtensions: ['epub'],
+            LSHandlerRank: 'Alternate',
+          },
+        ];
+        // Declare the m4b UTI — Apple defines it but the declaration ensures
+        // it resolves even on older OS versions.
+        c.modResults.UTImportedTypeDeclarations = [
+          {
+            UTTypeIdentifier: 'com.apple.m4b-audio',
+            UTTypeDescription: 'M4B Audiobook',
+            UTTypeConformsTo: ['public.audio', 'public.mpeg-4-audio'],
+            UTTypeTagSpecification: {
+              'public.filename-extension': ['m4b'],
+              'public.mime-type': ['audio/mp4', 'audio/x-m4b'],
+            },
+          },
+        ];
+        return c;
+      }),
   ],
   extra: {
     dropboxAppKey: process.env.DROPBOX_APP_KEY ?? '',

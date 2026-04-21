@@ -43,6 +43,9 @@ interface AddBookModalProps {
   onImportGoogleDrive?: () => void;
   hasICloud?: boolean;
   onImportICloud?: () => void;
+  /** Pre-populate one slot with a file that arrived via iOS "Open with".
+   *  The user still needs to supply the other file manually. */
+  initialSelection?: { kind: 'audio' | 'epub'; uri: string; name: string } | null;
 }
 
 export default function AddBookModal({
@@ -58,6 +61,7 @@ export default function AddBookModal({
   onImportGoogleDrive,
   hasICloud,
   onImportICloud,
+  initialSelection,
 }: AddBookModalProps) {
   const insets = useSafeAreaInsets();
   const [epub, setEpub] = useState<Selection | null>(null);
@@ -69,8 +73,17 @@ export default function AddBookModal({
       setEpub(null);
       setAudio(null);
       setConfirming(false);
+      return;
     }
-  }, [visible]);
+    // Pre-populate the matching slot from an incoming "Open with" file.
+    if (initialSelection) {
+      if (initialSelection.kind === 'epub') {
+        setEpub({ uri: initialSelection.uri, name: initialSelection.name });
+      } else {
+        setAudio({ uri: initialSelection.uri, name: initialSelection.name });
+      }
+    }
+  }, [visible, initialSelection]);
 
   const handlePickEpubDevice = useCallback(async (): Promise<Selection | null> => {
     const r = await onPickEpub();
