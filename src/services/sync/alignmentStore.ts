@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BookAlignment, M4BChapter } from '@/types/sync';
+import { BookAlignment, M4BChapter, SentenceAnchor } from '@/types/sync';
 import { buildLayer0 } from './alignmentBuilder';
 
 // Persistence for BookAlignment. AsyncStorage is adequate for Phase 1 — a
@@ -106,4 +106,39 @@ export async function ensureLayer0Fresh(
   }
   await saveAlignment(built);
   return built;
+}
+
+/**
+ * Replace the L1 anchor list for a single chapter and persist. Used by the
+ * on-device aligner as chunks finish. Returns the updated alignment so
+ * callers can react (e.g., bump status to 'processing' or 'complete').
+ */
+export async function setChapterAnchors(
+  bookId: string,
+  audioChapterIndex: number,
+  anchors: SentenceAnchor[],
+): Promise<BookAlignment | null> {
+  const existing = await getAlignment(bookId);
+  if (!existing) return null;
+
+  const updated: BookAlignment = {
+    ...existing,
+    l1Anchors: { ...existing.l1Anchors, [audioChapterIndex]: anchors },
+    updatedAt: Date.now(),
+  };
+
+  const totalChapters = updated.chapters.length;
+  const chaptersWithAnchors = Object.values(updated.l1Anchors).filter(
+    (list) => list && list.length > 0,
+  ).length;
+  if (chaptersWithAnchors === 0) {
+    // nothing changed in practice
+  } else if (chaptersWithAnchors >= totalChapters) {
+    updated.status = 'complete';
+  } else {
+    updated.status = 'processing';
+  }
+
+  await saveAlignment(updated);
+  return updated;
 }
