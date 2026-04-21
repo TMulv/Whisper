@@ -39,6 +39,11 @@ import { pushPosition } from '@/services/sync/syncEngine';
 import { seekToTimestamp } from '@/services/audio/trackPlayerService';
 import { getOrBuildLayer0, ensureLayer0Fresh } from '@/services/sync/alignmentStore';
 import { readerToAudio, audioToReader } from '@/services/sync/handoff';
+import {
+  hasCachedChapterText,
+  writeCachedChapterText,
+} from '@/services/sync/chapterTextCache';
+import { getAlignerQueue } from '@/services/sync/onDeviceAligner';
 import { logger } from '@/utils/logger';
 import type { LibraryStackParamList } from '@/navigation/types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -58,6 +63,60 @@ async function getOrCreateDeviceId(): Promise<string> {
     await AsyncStorage.setItem(DEVICE_ID_KEY, id);
   }
   return id;
+}
+
+// Per-book guard so a remount of ReaderScreen doesn't spawn a second copy
+// of the cascade (the first run completes quickly once the cache is warm).
+const cascadesInFlight = new Set<string>();
+
+/**
+ * Walk the epub spine, extract plain text for each chapter via the WebView
+ * bridge, and write it to the on-disk chapter-text cache. Runs
+ * sequentially and is best-effort — any per-chapter failure is logged and
+ * skipped. Once a chapter is cached, the aligner queue is notified so
+ * opportunistic alignment can start on background-queued chapters even
+ * while the user is still reading this one.
+ */
+function cacheChaptersInBackground(
+  bookId: string,
+  chapterCount: number,
+  webViewRef: React.RefObject<EpubWebViewRef | null>,
+): void {
+  if (cascadesInFlight.has(bookId)) return;
+  cascadesInFlight.add(bookId);
+  (async () => {
+    try {
+      for (let i = 0; i < chapterCount; i++) {
+        if (hasCachedChapterText(bookId, i)) continue;
+        const view = webViewRef.current;
+        if (!view) break;
+        try {
+          const text = await view.getChapterText(i);
+          // Empty chapter (e.g. cover-only spine entry) — still cache so
+          // we don't retry endlessly; tokenizer returns [] which the
+          // aligner handles as a no-op.
+          await writeCachedChapterText(bookId, i, text ?? '');
+          // Notify the aligner that new chapter text may be alignable.
+          // enqueueAllPending is idempotent + skips chapters that already
+          // have anchors, so calling it per-chapter just kicks the queue
+          // without duplicating work.
+          getAlignerQueue()?.enqueueAllPending(bookId).catch(() => {});
+        } catch (err) {
+          logger.warn('cacheChaptersInBackground: chapter failed', {
+            bookId,
+            chapterIndex: i,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        // Yield to the UI thread between chapters so scrolling stays
+        // responsive. 50 ms is conservative — getChapterText is already
+        // the long part of each iteration.
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } finally {
+      cascadesInFlight.delete(bookId);
+    }
+  })();
 }
 
 export default function ReaderScreen() {
@@ -411,6 +470,10 @@ export default function ReaderScreen() {
           if (audioChapters.length > 0) {
             ensureLayer0Fresh(params.bookId, audioChapters, list.length).catch(() => {});
           }
+          // Kick off opportunistic chapter-text caching for the on-device
+          // aligner. Runs sequentially in the background — we don't want to
+          // queue 40+ WebView calls at once and starve the user's reading.
+          cacheChaptersInBackground(params.bookId, list.length, webViewRef);
         }}
         onWordLookup={setLookupWordValue}
         onParagraphTap={handleParagraphTap}
