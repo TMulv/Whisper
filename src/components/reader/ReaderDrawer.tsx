@@ -112,7 +112,7 @@ export default function ReaderDrawer({
   );
 
   return (
-    <View style={styles.panel}>
+    <>
       <View style={styles.header}>
         <TouchableOpacity
           onPress={onHome}
@@ -320,7 +320,7 @@ export default function ReaderDrawer({
       )}
 
       <View style={styles.handle} />
-    </View>
+    </>
   );
 }
 
@@ -346,17 +346,6 @@ function MarginIcon({ value, active }: { value: ReaderMargin; active: boolean })
 }
 
 const styles = StyleSheet.create({
-  panel: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 12,
-    maxHeight: '78%',
-  },
   handle: {
     width: 36,
     height: 4,

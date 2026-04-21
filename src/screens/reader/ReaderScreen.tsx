@@ -4,11 +4,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   Text,
-  Modal,
   BackHandler,
   StatusBar,
   Platform,
-  ActivityIndicator,
 } from 'react-native';
 import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,17 +20,18 @@ import ReaderDrawer, {
   FONT_FAMILY_VALUES,
   MARGIN_VALUES,
 } from '@/components/reader/ReaderDrawer';
+import TopDrawerModal from '@/components/reader/TopDrawerModal';
 import WordLookupModal from '@/components/reader/WordLookupModal';
-import ImmersionBar from '@/components/reader/ImmersionBar';
 import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
 import { useImmersionReading } from '@/hooks/useImmersionReading';
 import { useNowPlaying } from '@/context/NowPlayingContext';
-import { readSyncState, deleteBook } from '@/services/firebase/firestoreService';
-import { localDeleteBook, localListBooks } from '@/services/book/localBookStore';
+import { readSyncState } from '@/services/firebase/firestoreService';
+import { localListBooks } from '@/services/book/localBookStore';
 import { getCachedPath } from '@/services/storage/localStorageService';
 import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
-import { File } from 'expo-file-system';
+import { File, Directory, Paths } from 'expo-file-system';
+import { CACHE_DIR } from '@/constants/config';
 import { EpubPosition } from '@/types/position';
 import { FirestorePosition } from '@/types/firebase';
 import { pushPosition } from '@/services/sync/syncEngine';
@@ -145,6 +144,7 @@ export default function ReaderScreen() {
   const [tapSeekToast, setTapSeekToast] = useState(false);
   const [bookHasAudio, setBookHasAudio] = useState(false);
   const [startingAudio, setStartingAudio] = useState(false);
+  const [bookTitle, setBookTitle] = useState<string | undefined>(undefined);
 
   const { chapters: audioChapters, book: nowPlayingBook, startPlayback } = useNowPlaying();
   // Audio is "live" for this book only when *this* book's audio is loaded in
@@ -202,10 +202,18 @@ export default function ReaderScreen() {
       try {
         const books = await localListBooks(user.uid);
         const meta = books.find((b) => b.id === params.bookId);
+        if (!cancelled && meta?.title) setBookTitle(meta.title);
         if (!meta?.audioPath) return;
-        const ext = meta.audioPath.split('.').pop() ?? 'm4b';
-        const uri = await getCachedPath(params.bookId, 'audio', ext);
-        if (!cancelled && uri) setBookHasAudio(true);
+        let resolved: string | null = null;
+        try {
+          const f = new File(meta.audioPath);
+          if (f.exists && (f.size ?? 0) > 0) resolved = meta.audioPath;
+        } catch { /* fall through to reconstruction */ }
+        if (!resolved) {
+          const ext = meta.audioPath.split('.').pop() ?? 'm4b';
+          resolved = await getCachedPath(params.bookId, 'audio', ext);
+        }
+        if (!cancelled && resolved) setBookHasAudio(true);
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
@@ -218,20 +226,55 @@ export default function ReaderScreen() {
     (async () => {
       try {
         logger.info('ReaderScreen: bridge ready, loading epub', { bookId: params.bookId });
-        const epubUri = await getCachedPath(params.bookId, 'epub', 'epub');
-        if (!epubUri) {
-          logger.warn('ReaderScreen: epub not cached, self-healing', { bookId: params.bookId });
+        // Prefer the saved path from book metadata over reconstructing
+        // `{bookId}_epub.epub`. The reconstruction was a footgun when the
+        // bookId drifted between import and save (fixed, but older books
+        // may still have mismatched paths, and the saved path is always
+        // the authoritative answer).
+        const booksForEpub = await localListBooks(user.uid);
+        const metaForEpub = booksForEpub.find((b) => b.id === params.bookId);
+        let epubUri: string | null = null;
+        if (metaForEpub?.epubPath) {
           try {
-            await localDeleteBook(user.uid, params.bookId);
+            const f = new File(metaForEpub.epubPath);
+            if (f.exists && (f.size ?? 0) > 0) epubUri = metaForEpub.epubPath;
+          } catch { /* fall through */ }
+        }
+        if (!epubUri) {
+          epubUri = await getCachedPath(params.bookId, 'epub', 'epub');
+        }
+        if (!epubUri) {
+          // Diagnostic: list the cache dir and the book's metadata so we can
+          // see what's actually there vs. what the reader expected.
+          let cacheListing: string[] = [];
+          try {
+            const dir = new Directory(Paths.document, CACHE_DIR);
+            cacheListing = dir.exists
+              ? dir.list().map((f) => f.uri.split('/').pop() ?? f.uri)
+              : ['<cache dir missing>'];
           } catch (err) {
-            logger.warn('ReaderScreen: localDeleteBook during self-heal failed', err);
+            cacheListing = [`<list failed: ${String(err)}>`];
           }
-          deleteBook(user.uid, params.bookId).catch(() => {});
-          setErrorMsg('This book is missing its EPUB file and has been removed from your library. Please re-add it.');
+          let bookMeta: unknown = null;
+          try {
+            const books = await localListBooks(user.uid);
+            bookMeta = books.find((b) => b.id === params.bookId) ?? null;
+          } catch (err) {
+            bookMeta = `<read failed: ${String(err)}>`;
+          }
+          logger.warn('ReaderScreen: epub not cached', {
+            bookId: params.bookId,
+            expectedFile: `${params.bookId}_epub.epub`,
+            cacheListing,
+            bookMeta,
+          });
+          // NOTE: self-heal (localDeleteBook + deleteBook) is disabled while
+          // diagnosing — deleting the book destroys the evidence we need to
+          // see why the epub path doesn't match the bookId.
+          setErrorMsg(
+            `Missing EPUB for bookId=${params.bookId}. Cache dir: ${cacheListing.join(', ') || '<empty>'}`,
+          );
           setLoading(false);
-          setTimeout(() => {
-            if (navigation.canGoBack()) navigation.goBack();
-          }, 1500);
           return;
         }
 
@@ -514,90 +557,51 @@ export default function ReaderScreen() {
         </View>
       )}
 
-      {/* Top bar: back + settings button (tap centre of screen to show) */}
+      {/* Top tap strip — Kindle-style. Tap opens the drawer. Starts below
+          the status bar to avoid conflicting with iOS Control Center /
+          Android notification shade pulls. */}
       <TouchableOpacity
-        style={[styles.tapZoneCenter, { top: insets.top }]}
+        style={[styles.topTapStrip, { top: insets.top }]}
         onPress={() => setControlsVisible(true)}
         activeOpacity={1}
+        accessibilityLabel="Open reader options"
       />
 
-      {/* Settings/controls modal */}
-      <Modal
+      {/* Top drawer with all controls (Audio / Display / Chapters) */}
+      <TopDrawerModal
         visible={controlsVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setControlsVisible(false)}
-        statusBarTranslucent
+        onDismiss={() => setControlsVisible(false)}
       >
-        <TouchableOpacity
-          style={styles.modalBackdrop}
-          activeOpacity={1}
-          onPress={() => setControlsVisible(false)}
-        >
-          {/* Prevent tap-through to backdrop from the panel itself */}
-          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
-            <ReaderDrawer
-              chapters={chapters}
-              currentChapterIndex={currentChapterIndex}
-              fontSize={fontSize}
-              theme={theme}
-              fontFamily={fontFamily}
-              margin={margin}
-              onFontSizeChange={handleFontSizeChange}
-              onThemeChange={handleThemeChange}
-              onFontFamilyChange={handleFontFamilyChange}
-              onMarginChange={handleMarginChange}
-              onChapterSelect={handleChapterSelect}
-              onClose={() => setControlsVisible(false)}
-              onHome={() => { setControlsVisible(false); navigation.goBack(); }}
-            />
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Back button (top-left) */}
-      <TouchableOpacity
-        style={[styles.backIcon, { top: insets.top + 8 }]}
-        onPress={() => navigation.goBack()}
-        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-      >
-        <View style={styles.backIconBubble}>
-          <Text style={styles.backIconText}>‹</Text>
-        </View>
-      </TouchableOpacity>
-
-      {/* Top-right action buttons stack: immersion toggle when audio is live,
-          otherwise a "start audio" shortcut if this book has audio available. */}
-      {(hasAudio || bookHasAudio) && (
-        <View style={[styles.topRightStack, { top: insets.top + 8 }]}>
-          {hasAudio ? (
-            <TouchableOpacity
-              style={styles.topRightBtn}
-              onPress={() => setImmersionActive((v) => !v)}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            >
-              <View style={[styles.backIconBubble, immersionActive && styles.immersionIconActive]}>
-                <Text style={styles.backIconText}>🎧</Text>
-              </View>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={styles.topRightBtn}
-              onPress={handleStartAudio}
-              disabled={startingAudio}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            >
-              <View style={styles.backIconBubble}>
-                {startingAudio ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.backIconText}>▶</Text>
-                )}
-              </View>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
+        <ReaderDrawer
+          chapters={chapters}
+          currentChapterIndex={currentChapterIndex}
+          fontSize={fontSize}
+          theme={theme}
+          fontFamily={fontFamily}
+          margin={margin}
+          onFontSizeChange={handleFontSizeChange}
+          onThemeChange={handleThemeChange}
+          onFontFamilyChange={handleFontFamilyChange}
+          onMarginChange={handleMarginChange}
+          onChapterSelect={(idx) => { handleChapterSelect(idx); setControlsVisible(false); }}
+          onClose={() => setControlsVisible(false)}
+          bookTitle={bookTitle}
+          onHome={() => { setControlsVisible(false); navigation.goBack(); }}
+          hasAudio={hasAudio}
+          bookHasAudio={bookHasAudio}
+          isPlaying={immersion.isPlaying}
+          position={immersion.position}
+          duration={immersion.duration}
+          currentChapter={immersion.currentAudioChapter}
+          audioChapters={audioChapters}
+          playbackRate={immersionRate}
+          onRateChange={setImmersionRate}
+          immersionActive={immersionActive}
+          onImmersionToggle={setImmersionActive}
+          startingAudio={startingAudio}
+          onStartAudio={handleStartAudio}
+        />
+      </TopDrawerModal>
 
       {/* Tap-to-seek toast */}
       {tapSeekToast && (
@@ -608,23 +612,6 @@ export default function ReaderScreen() {
 
       {/* Word lookup modal */}
       <WordLookupModal word={lookupWordValue} onClose={() => setLookupWordValue(null)} />
-
-      {/* Immersion bar — fixed at bottom when active */}
-      {immersionActive && (
-        <View style={[styles.immersionBarContainer, { paddingBottom: insets.bottom }]}>
-          <ImmersionBar
-            theme={theme}
-            isPlaying={immersion.isPlaying}
-            position={immersion.position}
-            duration={immersion.duration}
-            currentChapter={immersion.currentAudioChapter}
-            chapters={audioChapters}
-            playbackRate={immersionRate}
-            onRateChange={setImmersionRate}
-            onClose={() => setImmersionActive(false)}
-          />
-        </View>
-      )}
     </View>
   );
 }
@@ -655,64 +642,12 @@ const styles = StyleSheet.create({
   },
   backBtnText: { color: '#fff', fontWeight: '600' },
 
-  // Invisible centre tap zone to open controls
-  tapZoneCenter: {
-    position: 'absolute',
-    left: '30%',
-    right: '30%',
-    height: 60,
-    zIndex: 20,
-  },
-
-  // Modal
-  modalBackdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.4)',
-  },
-
-  // Back chevron
-  backIcon: {
-    position: 'absolute',
-    left: 12,
-    zIndex: 30,
-  },
-  backIconBubble: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backIconText: {
-    color: '#fff',
-    fontSize: 22,
-    lineHeight: 26,
-    fontWeight: '300',
-    marginLeft: -2,
-  },
-
-  // Top-right action stack (AI, immersion)
-  topRightStack: {
-    position: 'absolute',
-    right: 12,
-    flexDirection: 'row',
-    gap: 8,
-    zIndex: 30,
-  },
-  topRightBtn: {},
-  immersionIconActive: {
-    backgroundColor: 'rgba(26,26,46,0.85)',
-  },
-
-  // Immersion bar anchored at bottom
-  immersionBarContainer: {
+  topTapStrip: {
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 0,
-    zIndex: 40,
+    height: 72,
+    zIndex: 20,
   },
 
   tapSeekToast: {
