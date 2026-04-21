@@ -5,8 +5,11 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { EpubChapter, EpubTheme } from './EpubWebView';
+import { M4BChapter } from '@/types/sync';
+import AudioTransport from './AudioTransport';
 
 export type ReaderFontFamily = 'serif' | 'sans' | 'palatino' | 'mono';
 export type ReaderMargin = 'narrow' | 'normal' | 'wide';
@@ -39,6 +42,20 @@ interface Props {
   onClose: () => void;
   bookTitle?: string;
   onHome: () => void;
+  // Audio
+  hasAudio?: boolean;
+  bookHasAudio?: boolean;
+  isPlaying?: boolean;
+  position?: number;
+  duration?: number;
+  currentChapter?: M4BChapter | null;
+  audioChapters?: M4BChapter[];
+  playbackRate?: number;
+  onRateChange?: (rate: number) => void;
+  immersionActive?: boolean;
+  onImmersionToggle?: (active: boolean) => void;
+  startingAudio?: boolean;
+  onStartAudio?: () => void;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 26];
@@ -75,8 +92,24 @@ export default function ReaderDrawer({
   onClose,
   bookTitle,
   onHome,
+  hasAudio = false,
+  bookHasAudio = false,
+  isPlaying = false,
+  position = 0,
+  duration = 0,
+  currentChapter = null,
+  audioChapters = [],
+  playbackRate = 1,
+  onRateChange = () => {},
+  immersionActive = false,
+  onImmersionToggle = () => {},
+  startingAudio = false,
+  onStartAudio = () => {},
 }: Props) {
-  const [tab, setTab] = useState<'display' | 'chapters'>('display');
+  const audioAvailable = hasAudio || bookHasAudio;
+  const [tab, setTab] = useState<'audio' | 'display' | 'chapters'>(
+    audioAvailable ? 'audio' : 'display',
+  );
 
   return (
     <View style={styles.panel}>
@@ -103,6 +136,14 @@ export default function ReaderDrawer({
       </View>
 
       <View style={styles.tabBar}>
+        {audioAvailable && (
+          <TouchableOpacity
+            style={[styles.tab, tab === 'audio' && styles.tabActive]}
+            onPress={() => setTab('audio')}
+          >
+            <Text style={[styles.tabText, tab === 'audio' && styles.tabTextActive]}>Audio</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={[styles.tab, tab === 'display' && styles.tabActive]}
           onPress={() => setTab('display')}
@@ -117,7 +158,35 @@ export default function ReaderDrawer({
         </TouchableOpacity>
       </View>
 
-      {tab === 'display' ? (
+      {tab === 'audio' ? (
+        hasAudio ? (
+          <AudioTransport
+            isPlaying={isPlaying}
+            position={position}
+            duration={duration}
+            currentChapter={currentChapter}
+            chapters={audioChapters}
+            playbackRate={playbackRate}
+            onRateChange={onRateChange}
+            immersionActive={immersionActive}
+            onImmersionToggle={onImmersionToggle}
+          />
+        ) : (
+          <View style={styles.startAudioPane}>
+            <TouchableOpacity
+              style={styles.startAudioBtn}
+              onPress={onStartAudio}
+              disabled={startingAudio}
+            >
+              {startingAudio ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.startAudioBtnText}>▶  Start audiobook</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )
+      ) : tab === 'display' ? (
         <ScrollView style={styles.displayScroll} contentContainerStyle={styles.displayTab}>
           <Text style={styles.controlLabel}>Text size</Text>
           <View style={styles.fontSizeRow}>
@@ -433,4 +502,15 @@ const styles = StyleSheet.create({
   chapterRowText: { flex: 1, fontSize: 15, color: '#333', lineHeight: 20 },
   chapterRowTextActive: { color: '#1A1A2E', fontWeight: '600' },
   currentMarker: { fontSize: 10, color: '#1A1A2E', marginLeft: 8 },
+
+  startAudioPane: { padding: 24, alignItems: 'center' },
+  startAudioBtn: {
+    backgroundColor: '#1A1A2E',
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 24,
+    minWidth: 180,
+    alignItems: 'center',
+  },
+  startAudioBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
