@@ -6,6 +6,7 @@ import { localListBooks, localWriteBook, localDeleteBook } from '@/services/book
 import { fetchBookCover } from '@/services/book/coverLookupService';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { logger } from '@/utils/logger';
+import { getBookDisplay } from '@/utils/bookDisplay';
 
 function fileExists(uri: string | null | undefined): boolean {
   if (!uri) return false;
@@ -50,7 +51,8 @@ async function backfillMissingCovers(
   if (missing.length === 0) return;
 
   for (const book of missing) {
-    const url = await fetchBookCover(book.title, book.author || undefined);
+    const d = getBookDisplay(book);
+    const url = await fetchBookCover(d.title, d.author || undefined);
     if (!url) continue;
 
     setBooks((prev) =>

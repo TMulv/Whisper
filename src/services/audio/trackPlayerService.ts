@@ -7,6 +7,7 @@ import TrackPlayer, {
 import { LocalBook } from '@/types/book';
 import { M4BChapter } from '@/types/sync';
 import { logger } from '@/utils/logger';
+import { getBookDisplay } from '@/utils/bookDisplay';
 
 export async function setupPlayer(): Promise<boolean> {
   try {
@@ -54,11 +55,12 @@ export async function loadBook(
     throw new Error('No local audio URI available for book');
   }
 
+  const display = getBookDisplay(book);
   const track: Track = {
     id: book.id,
     url: book.localAudioUri,
-    title: book.title,
-    artist: book.author,
+    title: display.title,
+    artist: display.author,
     artwork: book.coverUri ?? undefined,
     duration: book.totalDurationSeconds,
   };

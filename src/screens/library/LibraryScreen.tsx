@@ -52,6 +52,7 @@ import type { LibraryStackParamList } from '@/navigation/types';
 import * as Crypto from 'expo-crypto';
 import { buildCachePath, ensureCacheDir } from '@/services/storage/localStorageService';
 import { formatDuration } from '@/utils/timeUtils';
+import { getBookDisplay } from '@/utils/bookDisplay';
 
 const ICLOUD_ENABLED_KEY = '@whisper/icloud_enabled';
 
@@ -137,6 +138,8 @@ function ShelfBook({
   const scale = press.interpolate({ inputRange: [0, 1], outputRange: [1, 0.96] });
   const lift = press.interpolate({ inputRange: [0, 1], outputRange: [0, -2] });
 
+  const display = getBookDisplay(book);
+
   return (
     <Pressable
       onPress={onPress}
@@ -157,7 +160,7 @@ function ShelfBook({
         ) : (
           <View style={[styles.cover, styles.coverPlaceholder]}>
             <Text style={styles.coverInitial}>
-              {book.title[0]?.toUpperCase() ?? '?'}
+              {display.title[0]?.toUpperCase() ?? '?'}
             </Text>
             <View style={styles.coverRule} />
             <Text style={styles.coverMark}>WHISPER</Text>
@@ -171,11 +174,11 @@ function ShelfBook({
       </Animated.View>
 
       <Text numberOfLines={2} style={styles.shelfTitle}>
-        {book.title}
+        {display.title}
       </Text>
-      {book.author ? (
+      {display.author ? (
         <Text numberOfLines={1} style={styles.shelfAuthor}>
-          {book.author}
+          {display.author}
         </Text>
       ) : null}
     </Pressable>
@@ -292,6 +295,8 @@ function CurrentlyReading({
 
   const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [18, 0] });
 
+  const display = getBookDisplay(book);
+
   return (
     <Animated.View
       style={[styles.heroWrap, { opacity: anim, transform: [{ translateY }] }]}
@@ -305,7 +310,7 @@ function CurrentlyReading({
           ) : (
             <View style={[styles.heroCover, styles.coverPlaceholder]}>
               <Text style={styles.coverInitial}>
-                {book.title[0]?.toUpperCase() ?? '?'}
+                {display.title[0]?.toUpperCase() ?? '?'}
               </Text>
             </View>
           )}
@@ -315,11 +320,11 @@ function CurrentlyReading({
 
         <View style={styles.heroMeta}>
           <Text style={styles.heroTitle} numberOfLines={3}>
-            {book.title}
+            {display.title}
           </Text>
-          {book.author ? (
+          {display.author ? (
             <Text style={styles.heroAuthor} numberOfLines={1}>
-              {book.author}
+              {display.author}
             </Text>
           ) : null}
 
@@ -747,7 +752,7 @@ export default function LibraryScreen() {
 
   const handleDeleteBook = useCallback(
     (book: LocalBook) => {
-      Alert.alert('Remove Book', `Remove "${book.title}"?`, [
+      Alert.alert('Remove Book', `Remove "${getBookDisplay(book).title}"?`, [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Remove',

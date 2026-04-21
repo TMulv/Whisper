@@ -10,6 +10,7 @@ import {
 import { LocalBook } from '@/types/book';
 import ProgressBar from './ProgressBar';
 import { formatDuration } from '@/utils/timeUtils';
+import { getBookDisplay } from '@/utils/bookDisplay';
 
 interface Props {
   book: LocalBook;
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export default function BookCard({ book, percentComplete = 0, onPress, onLongPress }: Props) {
+  const display = getBookDisplay(book);
   return (
     <TouchableOpacity
       style={styles.card}
@@ -34,7 +36,7 @@ export default function BookCard({ book, percentComplete = 0, onPress, onLongPre
           <Image source={{ uri: book.coverUri }} style={styles.cover} resizeMode="cover" />
         ) : (
           <View style={styles.coverPlaceholder}>
-            <Text style={styles.coverInitial}>{book.title[0]?.toUpperCase() ?? '?'}</Text>
+            <Text style={styles.coverInitial}>{display.title[0]?.toUpperCase() ?? '?'}</Text>
           </View>
         )}
         {/* Download indicator */}
@@ -51,8 +53,8 @@ export default function BookCard({ book, percentComplete = 0, onPress, onLongPre
 
       {/* Metadata */}
       <View style={styles.meta}>
-        <Text style={styles.title} numberOfLines={2}>{book.title}</Text>
-        <Text style={styles.author} numberOfLines={1}>{book.author}</Text>
+        <Text style={styles.title} numberOfLines={2}>{display.title}</Text>
+        <Text style={styles.author} numberOfLines={1}>{display.author}</Text>
 
         <View style={styles.footer}>
           <Text style={styles.duration}>

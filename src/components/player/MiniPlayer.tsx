@@ -10,6 +10,7 @@ import {
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { navigateRoot } from '@/navigation/navigationRef';
+import { getBookDisplay } from '@/utils/bookDisplay';
 
 export default function MiniPlayer() {
   const { book } = useNowPlaying();
@@ -17,6 +18,7 @@ export default function MiniPlayer() {
 
   if (!book) return null;
 
+  const display = getBookDisplay(book);
   const progress = duration > 0 ? Math.min(position / duration, 1) : 0;
 
   const handlePlayPause = () => {
@@ -37,14 +39,14 @@ export default function MiniPlayer() {
         <Image source={{ uri: book.coverUri }} style={styles.cover} />
       ) : (
         <View style={[styles.cover, styles.coverPlaceholder]}>
-          <Text style={styles.coverInitial}>{book.title[0]?.toUpperCase() ?? '?'}</Text>
+          <Text style={styles.coverInitial}>{display.title[0]?.toUpperCase() ?? '?'}</Text>
         </View>
       )}
 
       {/* Title + author */}
       <View style={styles.info}>
-        <Text style={styles.title} numberOfLines={1}>{book.title}</Text>
-        <Text style={styles.author} numberOfLines={1}>{book.author}</Text>
+        <Text style={styles.title} numberOfLines={1}>{display.title}</Text>
+        <Text style={styles.author} numberOfLines={1}>{display.author}</Text>
       </View>
 
       {/* Play / pause */}
