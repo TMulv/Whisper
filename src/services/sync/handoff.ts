@@ -5,7 +5,6 @@ import {
   SentenceAnchor,
 } from '@/types/sync';
 import { EpubPosition, AudioPosition } from '@/types/position';
-import { buildChapterBaseCfi } from '@/utils/cfiUtils';
 import {
   audioSecondsToParagraphCfi,
   paragraphPositionToAudioSeconds,
@@ -270,13 +269,17 @@ export function audioToReader(
     }
   }
 
-  // L0: proportional within chapter.
+  // L0: proportional within chapter. No anchors and no weights means we only
+  // know the chapter; any CFI we'd synthesize here is a chapter-base-only CFI
+  // (no `!` separator / inner path) that epub.js' parser crashes on when
+  // handed to rendition.display. Return an empty cfi so callers navigate by
+  // chapterIndex instead.
   const progress = chapterProgressFromAudioSeconds(ch, audio.timestampSeconds);
   const percentComplete =
     ch.epubPercentStart + progress * (ch.epubPercentEnd - ch.epubPercentStart);
   return {
     chapterIndex: ch.epubChapterIndex,
-    cfi: ch.epubCfiBase || buildChapterBaseCfi(ch.epubChapterIndex),
+    cfi: '',
     charOffset: 0,
     percentComplete,
   };

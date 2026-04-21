@@ -327,7 +327,10 @@ export default function ReaderScreen() {
           );
           setTimeout(() => {
             if (target.cfi) webViewRef.current?.goTo(target.cfi);
-            else webViewRef.current?.seekToPercent(target.percentComplete);
+            // No real CFI from the handoff (L0 fallback / no alignment) —
+            // navigate by chapter. seekToPercent would require locations to
+            // already be generated, which isn't true on a cold load.
+            else webViewRef.current?.goToChapter(target.chapterIndex);
           }, 1000);
         } else if (saved) {
           setTimeout(() => webViewRef.current?.goTo(saved.cfi), 800);

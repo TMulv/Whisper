@@ -87,6 +87,19 @@ describe('handoff — L0 audioToReader', () => {
     assert.ok(r.percentComplete > 0.9 && r.percentComplete <= 1.0);
   });
 
+  it('L0 fallback returns empty cfi so callers navigate by chapterIndex', () => {
+    // epub.js' rendition.display crashes on a chapter-base-only CFI like
+    // `epubcfi(/6/4)` (no `!` separator). The L0 resolver has no real CFI
+    // to offer, so it must return '' — callers (e.g. ReaderScreen) use
+    // chapterIndex to navigate in that case.
+    const r = audioToReader(
+      { chapterIndex: 1, timestampSeconds: 900, percentComplete: 0 },
+      baseAlignment,
+    );
+    assert.equal(r.cfi, '');
+    assert.equal(r.chapterIndex, 1);
+  });
+
   it('roundtrip: audio → reader → audio lands within 1s', () => {
     const original = 750; // mid-chapter-2
     const epub = audioToReader(

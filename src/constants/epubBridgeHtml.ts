@@ -148,8 +148,45 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           postToRN({type:'ERROR',message:'v3 loadBook threw: '+(e.message||e)});
         }
       },
-      goTo: function(cfi){if(_rendition){showLoading(true);_rendition.display(cfi).then(function(){showLoading(false);}).catch(function(){showLoading(false);});}},
-      goToChapter: function(i){if(!_book||!_rendition)return;var c=_chapters[i];if(c){showLoading(true);_rendition.display(c.href).then(function(){showLoading(false);}).catch(function(){showLoading(false);});}},
+      goTo: function(cfi){
+        if(!_rendition) return;
+        showLoading(true);
+        try {
+          _rendition.display(cfi)
+            .then(function(){ showLoading(false); })
+            .catch(function(e){
+              showLoading(false);
+              postToRN({type:'ERROR', message:'goTo rejected: '+(e&&e.message||e)+' cfi='+cfi});
+            });
+        } catch(e) {
+          showLoading(false);
+          postToRN({type:'ERROR', message:'goTo threw: '+(e&&e.message||e)+' cfi='+cfi});
+        }
+      },
+      goToChapter: function(i){
+        if(!_book||!_rendition){postToRN({type:'ERROR',message:'goToChapter: book not ready (i='+i+')'});return;}
+        var c=_chapters[i];
+        if(!c){postToRN({type:'ERROR',message:'goToChapter: no chapter at index '+i});return;}
+        // Resolve href via spine so we get the canonical spine path. TOC hrefs
+        // can be relative to the nav doc rather than the book root; display()
+        // then fails silently. Preserve any #fragment so sub-chapter anchors
+        // (e.g. "Part II") land at the right scroll position.
+        var target=c.href;
+        try{
+          var section=_book.spine.get(c.href);
+          if(section&&section.href){
+            var hashIdx=String(c.href).indexOf('#');
+            var hash=hashIdx>=0?String(c.href).substring(hashIdx):'';
+            target=section.href+hash;
+          }
+        }catch(e){}
+        showLoading(true);
+        _lastProgrammaticNavMs=Date.now();
+        _rendition.display(target).then(function(){showLoading(false);}).catch(function(e){
+          showLoading(false);
+          postToRN({type:'ERROR',message:'goToChapter display failed target='+target+' orig='+c.href+' err='+(e&&(e.message||e))});
+        });
+      },
       setFontSize: function(px){_fontSize=px;if(_rendition){_rendition.themes.fontSize(px+'px');applyThemeToRendition(_currentTheme);}},
       setTheme: function(t){_currentTheme=t;document.body.className='theme-'+t;applyThemeToRendition(t);document.getElementById('loading').style.background=(THEME_STYLES[t]||THEME_STYLES.light).body.background;},
       setFontFamily: function(f){_fontFamily=f;if(_rendition)applyThemeToRendition(_currentTheme);},
