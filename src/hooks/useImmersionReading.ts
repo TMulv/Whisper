@@ -1,12 +1,12 @@
-import { useEffect, useRef, useCallback, RefObject } from 'react';
+import { useEffect, useRef, useState, RefObject } from 'react';
 import { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { EpubWebViewRef } from '@/components/reader/EpubWebView';
-import { M4BChapter } from '@/types/sync';
-
-const HIGHLIGHT_THROTTLE_MS = 1200;
+import { M4BChapter, BookAlignment } from '@/types/sync';
+import { getAlignment } from '@/services/sync/alignmentStore';
 
 interface ImmersionReadingOptions {
   webViewRef: RefObject<EpubWebViewRef | null>;
+  bookId: string | null;
   audioChapters: M4BChapter[];
   epubChapterCount: number;
   enabled: boolean;
@@ -19,8 +19,15 @@ export interface ImmersionState {
   currentAudioChapter: M4BChapter | null;
 }
 
+// Immersion mode is "audio plays, reader follows along." Phase 1 scope is
+// chapter-level: when the audio chapter changes, navigate the reader to the
+// matching epub chapter (looked up via the handoff alignment so M != N books
+// are handled correctly). The old sub-chapter per-2-second seekToPercent has
+// been removed — that was live-sync territory and relied on whole-book
+// percent drift that no longer exists.
 export function useImmersionReading({
   webViewRef,
+  bookId,
   audioChapters,
   epubChapterCount,
   enabled,
@@ -29,8 +36,24 @@ export function useImmersionReading({
   const playbackState = usePlaybackState();
   const isPlaying = playbackState.state === State.Playing;
 
-  const lastHighlightRef = useRef(0);
-  const lastChapterIndexRef = useRef(-1);
+  const [alignment, setAlignment] = useState<BookAlignment | null>(null);
+  const lastEpubChapterRef = useRef(-1);
+
+  // Load alignment once per book. Safe to be optimistic — if it's missing the
+  // resolver falls back to proportional mapping driven by chapter counts.
+  useEffect(() => {
+    let cancelled = false;
+    if (!bookId) {
+      setAlignment(null);
+      return;
+    }
+    getAlignment(bookId).then((a) => {
+      if (!cancelled) setAlignment(a);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bookId]);
 
   const currentAudioChapter: M4BChapter | null =
     audioChapters.length > 0
@@ -40,45 +63,43 @@ export function useImmersionReading({
         }, audioChapters[0])
       : null;
 
-  // Map audio chapter index → epub chapter index
-  // If counts match, use 1:1. Otherwise scale proportionally.
-  const epubChapterIndex = useCallback(
-    (audioIdx: number): number => {
-      if (epubChapterCount === 0) return 0;
-      if (audioChapters.length === epubChapterCount) return audioIdx;
-      return Math.round((audioIdx / Math.max(audioChapters.length - 1, 1)) * (epubChapterCount - 1));
-    },
-    [audioChapters.length, epubChapterCount],
-  );
-
-  // When chapter changes, navigate the reader to that chapter
+  // When the audio chapter changes, navigate the reader to the matching epub
+  // chapter. Prefer the alignment's mapping; fall back to proportional if
+  // alignment hasn't loaded yet.
   useEffect(() => {
     if (!enabled || !currentAudioChapter) return;
-    const mappedIdx = epubChapterIndex(currentAudioChapter.index);
-    if (mappedIdx !== lastChapterIndexRef.current) {
-      lastChapterIndexRef.current = mappedIdx;
-      webViewRef.current?.goToChapter(mappedIdx);
+    const audioIdx = currentAudioChapter.index;
+    let epubIdx: number;
+    const aligned = alignment?.chapters.find(
+      (c) => c.audioChapterIndex === audioIdx,
+    );
+    if (aligned) {
+      epubIdx = aligned.epubChapterIndex;
+    } else if (epubChapterCount > 0) {
+      epubIdx =
+        audioChapters.length === epubChapterCount
+          ? audioIdx
+          : Math.round(
+              (audioIdx / Math.max(audioChapters.length - 1, 1)) *
+                (epubChapterCount - 1),
+            );
+    } else {
+      return;
     }
-  }, [enabled, currentAudioChapter?.index, epubChapterIndex, webViewRef]);
+    if (epubIdx !== lastEpubChapterRef.current) {
+      lastEpubChapterRef.current = epubIdx;
+      webViewRef.current?.goToChapter(epubIdx);
+    }
+  }, [
+    enabled,
+    currentAudioChapter?.index,
+    alignment,
+    audioChapters.length,
+    epubChapterCount,
+    webViewRef,
+  ]);
 
-  // Throttled highlight: update within-chapter progress
-  useEffect(() => {
-    if (!enabled || !isPlaying || !currentAudioChapter) return;
-
-    const now = Date.now();
-    if (now - lastHighlightRef.current < HIGHLIGHT_THROTTLE_MS) return;
-    lastHighlightRef.current = now;
-
-    const chapterDuration = currentAudioChapter.endSeconds - currentAudioChapter.startSeconds;
-    const ratio =
-      chapterDuration > 0
-        ? Math.max(0, Math.min(1, (position - currentAudioChapter.startSeconds) / chapterDuration))
-        : 0;
-
-    webViewRef.current?.highlightProgress(ratio);
-  });
-
-  // Clear highlight when immersion mode is disabled or playback stops
+  // Keep the reader's progress highlight cleared when immersion isn't active.
   useEffect(() => {
     if (!enabled || !isPlaying) {
       webViewRef.current?.clearHighlight();

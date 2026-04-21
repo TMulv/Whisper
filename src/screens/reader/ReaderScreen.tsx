@@ -8,6 +8,7 @@ import {
   BackHandler,
   StatusBar,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,7 +24,6 @@ import ReaderControls, {
 } from '@/components/reader/ReaderControls';
 import WordLookupModal from '@/components/reader/WordLookupModal';
 import ImmersionBar from '@/components/reader/ImmersionBar';
-import AIInsightsModal from '@/components/ai/AIInsightsModal';
 import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
 import { useImmersionReading } from '@/hooks/useImmersionReading';
@@ -31,10 +31,14 @@ import { useNowPlaying } from '@/context/NowPlayingContext';
 import { readSyncState, deleteBook } from '@/services/firebase/firestoreService';
 import { localDeleteBook, localListBooks } from '@/services/book/localBookStore';
 import { getCachedPath } from '@/services/storage/localStorageService';
+import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
 import { File } from 'expo-file-system';
 import { EpubPosition } from '@/types/position';
 import { FirestorePosition } from '@/types/firebase';
 import { pushPosition } from '@/services/sync/syncEngine';
+import { seekToTimestamp } from '@/services/audio/trackPlayerService';
+import { getOrBuildLayer0, ensureLayer0Fresh } from '@/services/sync/alignmentStore';
+import { readerToAudio, audioToReader } from '@/services/sync/handoff';
 import { logger } from '@/utils/logger';
 import type { LibraryStackParamList } from '@/navigation/types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -79,30 +83,28 @@ export default function ReaderScreen() {
   const [deviceId, setDeviceId] = useState('');
   const [immersionActive, setImmersionActive] = useState(false);
   const [immersionRate, setImmersionRate] = useState(1.0);
-  const [aiVisible, setAiVisible] = useState(false);
-  const [bookMeta, setBookMeta] = useState<{ title: string; author: string } | null>(null);
+  const [tapSeekToast, setTapSeekToast] = useState(false);
+  const [bookHasAudio, setBookHasAudio] = useState(false);
+  const [startingAudio, setStartingAudio] = useState(false);
 
-  const { chapters: audioChapters } = useNowPlaying();
-  const hasAudio = audioChapters.length > 0;
+  const { chapters: audioChapters, book: nowPlayingBook, startPlayback } = useNowPlaying();
+  // Audio is "live" for this book only when *this* book's audio is loaded in
+  // the player — any other state (nothing loaded, or a different book) means
+  // we should offer to start audio rather than act on stale chapters.
+  const audioLoadedForThisBook = nowPlayingBook?.id === params.bookId && audioChapters.length > 0;
+  const hasAudio = audioLoadedForThisBook;
 
   const immersion = useImmersionReading({
     webViewRef,
+    bookId: params.bookId,
     audioChapters,
     epubChapterCount: chapters.length,
     enabled: immersionActive,
   });
 
   const readyRef = useRef(false);
+  const lastEpubChapterRef = useRef(-1);
   const { onPositionChange, loadLocalPosition } = useEpubPosition(params.bookId, user?.uid ?? null);
-
-  // ── Load book metadata (title/author) for AI context ───────────────────────
-  useEffect(() => {
-    if (!user) return;
-    localListBooks(user.uid).then((books) => {
-      const found = books.find((b) => b.id === params.bookId);
-      if (found) setBookMeta({ title: found.title, author: found.author ?? '' });
-    });
-  }, [user, params.bookId]);
 
   // ── Mount: load device ID, persisted font size, initial position ───────────
   useEffect(() => {
@@ -131,6 +133,24 @@ export default function ReaderScreen() {
     }, 15000);
     return () => clearTimeout(timeout);
   }, []);
+
+  // Check whether this book has an audio file downloaded so we can offer a
+  // "Start Audio" button inside the reader (without bouncing to BookDetail).
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const books = await localListBooks(user.uid);
+        const meta = books.find((b) => b.id === params.bookId);
+        if (!meta?.audioPath) return;
+        const ext = meta.audioPath.split('.').pop() ?? 'm4b';
+        const uri = await getCachedPath(params.bookId, 'audio', ext);
+        if (!cancelled && uri) setBookHasAudio(true);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [user, params.bookId]);
 
   // ── After bridge ready: load the epub and check for audio sync position ────
   useEffect(() => {
@@ -186,7 +206,28 @@ export default function ReaderScreen() {
         webViewRef.current?.setMargin(MARGIN_VALUES[margin]);
 
         const saved = await loadLocalPosition();
-        if (saved && !params.resumeFromAudio) {
+        if (params.resumeFromAudio && immersion.position > 0 && audioChapters.length > 0) {
+          // Navigate the reader to wherever audio currently is, using the
+          // handoff resolver (chapter-accurate; sentence-accurate once L1
+          // anchors exist for the current chapter).
+          const alignment = await getOrBuildLayer0(
+            params.bookId,
+            audioChapters,
+            chapters.length > 0 ? chapters.length : audioChapters.length,
+          );
+          const target = audioToReader(
+            {
+              chapterIndex: immersion.currentAudioChapter?.index ?? 0,
+              timestampSeconds: immersion.position,
+              percentComplete: 0,
+            },
+            alignment,
+          );
+          setTimeout(() => {
+            if (target.cfi) webViewRef.current?.goTo(target.cfi);
+            else webViewRef.current?.seekToPercent(target.percentComplete);
+          }, 1000);
+        } else if (saved) {
           setTimeout(() => webViewRef.current?.goTo(saved.cfi), 800);
         }
 
@@ -215,13 +256,41 @@ export default function ReaderScreen() {
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   const handlePositionChange = useCallback(
-    (position: EpubPosition) => {
+    (position: EpubPosition, programmatic: boolean) => {
       setCurrentChapterIndex(position.chapterIndex);
+
+      // When user manually navigates to a different chapter (not via immersion
+      // sync) and audio is loaded, seek audio to the matching chapter start
+      // via the handoff resolver.
+      if (!programmatic && !immersionActive && hasAudio && audioChapters.length > 0) {
+        const epubChIdx = position.chapterIndex;
+        if (epubChIdx !== lastEpubChapterRef.current) {
+          lastEpubChapterRef.current = epubChIdx;
+          getOrBuildLayer0(
+            params.bookId,
+            audioChapters,
+            chapters.length > 0 ? chapters.length : audioChapters.length,
+          )
+            .then((alignment) => {
+              const target = readerToAudio(
+                { chapterIndex: epubChIdx, cfi: position.cfi, charOffset: 0, percentComplete: position.percentComplete },
+                alignment,
+              );
+              const ch = alignment.chapters.find(
+                (c) => c.audioChapterIndex === target.chapterIndex,
+              );
+              // Seek to the start of the matching audio chapter, not into the
+              // middle — manual chapter nav is a "jump," not a fine-seek.
+              const targetSeconds = ch?.audioStartSeconds ?? target.timestampSeconds;
+              return seekToTimestamp(targetSeconds);
+            })
+            .catch(() => {});
+        }
+      }
+
       onPositionChange(position, async (pos) => {
         if (!user || !deviceId) return;
         try {
-          // We need a BookSyncMap to convert — for now push epub position directly
-          // Full sync map integration happens in Phase 5
           const syncedPos = {
             bookId: params.bookId,
             deviceId,
@@ -239,7 +308,7 @@ export default function ReaderScreen() {
         }
       });
     },
-    [user, deviceId, params.bookId, onPositionChange],
+    [user, deviceId, params.bookId, onPositionChange, immersionActive, hasAudio, audioChapters, chapters.length],
   );
 
   const handleFontSizeChange = useCallback((px: number) => {
@@ -271,6 +340,28 @@ export default function ReaderScreen() {
     setCurrentChapterIndex(index);
   }, []);
 
+  const handleParagraphTap = useCallback((percentComplete: number, chapterIndex: number) => {
+    if (!hasAudio || audioChapters.length === 0) return;
+    // Ignore pct<=0 — that means locations weren't ready, and seeking to 0
+    // is almost certainly not what the user wants.
+    if (percentComplete <= 0) return;
+    getOrBuildLayer0(
+      params.bookId,
+      audioChapters,
+      chapters.length > 0 ? chapters.length : audioChapters.length,
+    )
+      .then((alignment) => {
+        const target = readerToAudio(
+          { chapterIndex, cfi: '', charOffset: 0, percentComplete },
+          alignment,
+        );
+        return seekToTimestamp(Math.max(0, target.timestampSeconds));
+      })
+      .catch(() => {});
+    setTapSeekToast(true);
+    setTimeout(() => setTapSeekToast(false), 1800);
+  }, [hasAudio, audioChapters, chapters.length, params.bookId]);
+
   const handleSyncResume = useCallback(() => {
     if (!syncBannerData) return;
     setSyncBannerData(null);
@@ -280,6 +371,23 @@ export default function ReaderScreen() {
       webViewRef.current?.goToChapter(syncBannerData.chapterIndex);
     }
   }, [syncBannerData]);
+
+  // Start (or resume) audio for *this* book from the reader, then flip into
+  // immersion mode so the page scroll follows the audio automatically.
+  const handleStartAudio = useCallback(async () => {
+    if (!user || startingAudio) return;
+    setStartingAudio(true);
+    try {
+      const prepared = await prepareBookForPlayback(user.uid, params.bookId);
+      if (!prepared) return;
+      await startPlayback(prepared.localBook, prepared.chapters, prepared.startTimestamp);
+      setImmersionActive(true);
+    } catch (err) {
+      logger.warn('ReaderScreen: start audio failed', err);
+    } finally {
+      setStartingAudio(false);
+    }
+  }, [user, params.bookId, startPlayback, startingAudio]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const bgColor = theme === 'dark' ? '#121212' : theme === 'sepia' ? '#f5efe0' : '#ffffff';
@@ -293,8 +401,16 @@ export default function ReaderScreen() {
         ref={webViewRef}
         onReady={() => { readyRef.current = true; setReady(true); }}
         onPositionChange={handlePositionChange}
-        onChapterList={setChapters}
+        onChapterList={(list) => {
+          setChapters(list);
+          // The reader is the only place we know the real epub spine count.
+          // Refresh L0 now so handoff math uses the accurate chapter count.
+          if (audioChapters.length > 0) {
+            ensureLayer0Fresh(params.bookId, audioChapters, list.length).catch(() => {});
+          }
+        }}
         onWordLookup={setLookupWordValue}
+        onParagraphTap={handleParagraphTap}
         onError={setErrorMsg}
       />
 
@@ -383,55 +499,45 @@ export default function ReaderScreen() {
         </View>
       </TouchableOpacity>
 
-      {/* Top-right action buttons stack: AI + (optional) immersion */}
-      <View style={[styles.topRightStack, { top: insets.top + 8 }]}>
-        <TouchableOpacity
-          style={styles.topRightBtn}
-          onPress={() => setAiVisible(true)}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-        >
-          <View style={styles.backIconBubble}>
-            <Text style={styles.aiIconText}>✨</Text>
-          </View>
-        </TouchableOpacity>
-        {hasAudio && (
-          <TouchableOpacity
-            style={styles.topRightBtn}
-            onPress={() => setImmersionActive((v) => !v)}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
-            <View style={[styles.backIconBubble, immersionActive && styles.immersionIconActive]}>
-              <Text style={styles.backIconText}>🎧</Text>
-            </View>
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Top-right action buttons stack: immersion toggle when audio is live,
+          otherwise a "start audio" shortcut if this book has audio available. */}
+      {(hasAudio || bookHasAudio) && (
+        <View style={[styles.topRightStack, { top: insets.top + 8 }]}>
+          {hasAudio ? (
+            <TouchableOpacity
+              style={styles.topRightBtn}
+              onPress={() => setImmersionActive((v) => !v)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <View style={[styles.backIconBubble, immersionActive && styles.immersionIconActive]}>
+                <Text style={styles.backIconText}>🎧</Text>
+              </View>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.topRightBtn}
+              onPress={handleStartAudio}
+              disabled={startingAudio}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <View style={styles.backIconBubble}>
+                {startingAudio ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.backIconText}>▶</Text>
+                )}
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
-      {/* AI insights modal */}
-      <AIInsightsModal
-        visible={aiVisible}
-        onClose={() => setAiVisible(false)}
-        chapterContext={{
-          bookTitle: bookMeta?.title ?? 'This book',
-          author: bookMeta?.author ?? '',
-          chapterTitle: chapters[currentChapterIndex]?.title ?? '',
-          chapterIndex: currentChapterIndex,
-          totalChapters: chapters.length || 1,
-        }}
-        loadChapterText={async () => {
-          try {
-            const text = await webViewRef.current?.getChapterText(currentChapterIndex);
-            return text && text.length > 0 ? text : null;
-          } catch (err) {
-            logger.warn('ReaderScreen: getChapterText failed', err);
-            return null;
-          }
-        }}
-        onOpenSettings={() => {
-          (navigation as any).navigate('Main', { screen: 'Settings' });
-        }}
-      />
-
+      {/* Tap-to-seek toast */}
+      {tapSeekToast && (
+        <View style={styles.tapSeekToast} pointerEvents="none">
+          <Text style={styles.tapSeekToastText}>▶ Audio jumping here</Text>
+        </View>
+      )}
 
       {/* Word lookup modal */}
       <WordLookupModal word={lookupWordValue} onClose={() => setLookupWordValue(null)} />
@@ -529,7 +635,6 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   topRightBtn: {},
-  aiIconText: { fontSize: 18, lineHeight: 22 },
   immersionIconActive: {
     backgroundColor: 'rgba(26,26,46,0.85)',
   },
@@ -541,5 +646,21 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     zIndex: 40,
+  },
+
+  tapSeekToast: {
+    position: 'absolute',
+    bottom: 80,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(26,26,46,0.92)',
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 20,
+    zIndex: 50,
+  },
+  tapSeekToastText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

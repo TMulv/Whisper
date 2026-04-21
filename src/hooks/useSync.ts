@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { SyncedPosition, PositionConflict } from '@/types/position';
-import { BookSyncMap } from '@/types/sync';
 import { readSyncState } from '@/services/firebase/firestoreService';
 import { resolvePosition } from '@/services/sync/syncEngine';
 import { FirestorePosition } from '@/types/firebase';

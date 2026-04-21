@@ -1,33 +1,58 @@
-import { SyncMode } from './book';
+// ── Audiobook/ebook alignment (handoff sync) ────────────────────────────────
+// See docs/superpowers/specs/2026-04-20-audiobook-ebook-sync-design.md.
 
-export interface ChapterMapping {
-  chapterIndex: number;
-  epubSpineIndex: number;
-  epubCfiBase: string;
+/**
+ * Per-chapter mapping between the audio (m4b) and ebook (epub) domains.
+ * Produced at Layer 0 from m4b chapter timestamps + epub spine/percent distribution.
+ */
+export interface ChapterAlignment {
+  // Audio domain
+  audioChapterIndex: number;
   audioStartSeconds: number;
   audioEndSeconds: number;
-  percentStart: number;
-  percentEnd: number;
+
+  // Epub domain
+  epubChapterIndex: number;
+  epubCfiBase: string;
+
+  // Chapter's span over the book's [0..1] epub percent axis. Used by the
+  // resolver for proportional-within-chapter fallback when no L1 anchors are
+  // available.
+  epubPercentStart: number;
+  epubPercentEnd: number;
 }
 
-export interface AeneasFragment {
-  id: string;
-  begin: string;
-  end: string;
-  language: string;
-  lines: string[];
-  children: AeneasFragment[];
+/**
+ * A Layer 1 sentence-level anchor produced by Whisper + DTW.
+ * Empty for Phase 1; resolver is structurally ready to consume them.
+ */
+export interface SentenceAnchor {
+  audioSeconds: number;
+  epubCfi: string;
+  charOffset: number;
+  percentComplete: number; // book-wide epub percent, for L0-style interpolation between anchors
+  confidence: number; // 0..1
 }
 
-export interface AeneasSyncMap {
-  fragments: AeneasFragment[];
-}
+export type AlignmentStatus =
+  | 'pending' // no L0 built yet
+  | 'partial' // L0 ready, L1 not started/in-progress
+  | 'processing' // L1 actively being produced
+  | 'complete' // L1 complete for every chapter
+  | 'failed';
 
-export interface BookSyncMap {
+/**
+ * Full alignment record persisted per book.
+ * Layer 0 (chapters) is always populated once built. Layer 1 (l1Anchors) is a
+ * map keyed by audioChapterIndex — absent entries mean that chapter is still L0-only.
+ */
+export interface BookAlignment {
   bookId: string;
-  mode: SyncMode;
-  chapters: ChapterMapping[];
-  aeneas: AeneasSyncMap | null;
+  version: number; // bump if we change the shape incompatibly
+  chapters: ChapterAlignment[];
+  l1Anchors: Record<number, SentenceAnchor[]>;
+  status: AlignmentStatus;
+  updatedAt: number;
 }
 
 export interface M4BChapter {
@@ -36,3 +61,4 @@ export interface M4BChapter {
   startSeconds: number;
   endSeconds: number;
 }
+

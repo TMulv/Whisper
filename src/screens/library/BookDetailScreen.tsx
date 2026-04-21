@@ -17,15 +17,23 @@ import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-n
 import { useAuth } from '@/hooks/useAuth';
 import { writeBook, deleteBook } from '@/services/firebase/firestoreService';
 import { localListBooks, localWriteBook, localDeleteBook } from '@/services/book/localBookStore';
-import { getCachedPath, writeTextToCache, readTextFromCache } from '@/services/storage/localStorageService';
-import { parseChaptersJson, createFallbackChapter, chaptersFromAudnexus, serializeChapters } from '@/services/audio/m4bParser';
+import { getCachedPath, writeTextToCache } from '@/services/storage/localStorageService';
+import { chaptersFromAudnexus, serializeChapters } from '@/services/audio/m4bParser';
 import { lookupChapters, lookupChaptersByAsin } from '@/services/audio/chapterLookupService';
+import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
+import { ensureLayer0Fresh } from '@/services/sync/alignmentStore';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { navigateRoot } from '@/navigation/navigationRef';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import CoverPickerModal from '@/components/library/CoverPickerModal';
-import { SyncMode, LocalBook } from '@/types/book';
+import AIInsightsModal from '@/components/ai/AIInsightsModal';
+import EpubWebView, { EpubWebViewRef, EpubChapter } from '@/components/reader/EpubWebView';
+import type { AIPromptId } from '@/services/ai/aiPrompts';
+import { SyncMode } from '@/types/book';
 import { FirestoreBook } from '@/types/firebase';
 import { formatDuration } from '@/utils/timeUtils';
+import { getBookDisplay } from '@/utils/bookDisplay';
+import { logger } from '@/utils/logger';
 import type { LibraryStackParamList } from '@/navigation/types';
 
 type Props = NativeStackScreenProps<LibraryStackParamList, 'BookDetail'>;
@@ -80,7 +88,15 @@ export default function BookDetailScreen() {
   const [chapterFileExists, setChapterFileExists] = useState(false);
   const [lookingUpChapters, setLookingUpChapters] = useState(false);
   const [coverPickerVisible, setCoverPickerVisible] = useState(false);
+  const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
+  const [aiPromptId, setAiPromptId] = useState<AIPromptId | null>(null);
+  const [hiddenEpubMounted, setHiddenEpubMounted] = useState(false);
+  const [hiddenEpubChapters, setHiddenEpubChapters] = useState<EpubChapter[]>([]);
   const { startPlayback, book: nowPlayingBook, clearNowPlaying, updateBookCover } = useNowPlaying();
+
+  const hiddenEpubRef = useRef<EpubWebViewRef>(null);
+  const hiddenEpubReadyRef = useRef(false);
+  const hiddenEpubBookLoadedRef = useRef(false);
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(20)).current;
@@ -98,6 +114,16 @@ export default function BookDetailScreen() {
       }
       const chaptersUri = await getCachedPath(params.bookId, 'chapters', 'json');
       setChapterFileExists(!!chaptersUri);
+      try {
+        const epubKey = `@whisper/positions_cache:${params.bookId}:epub`;
+        const raw = await AsyncStorage.getItem(epubKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed?.chapterIndex === 'number') {
+            setCurrentChapterIndex(parsed.chapterIndex);
+          }
+        }
+      } catch { /* ignore */ }
       setLoading(false);
       Animated.parallel([
         Animated.timing(headerOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
@@ -144,6 +170,10 @@ export default function BookDetailScreen() {
             writeBook(user.uid, params.bookId, updated).catch(() => {});
             setBook((prev) => (prev ? { ...prev, totalChapters: m4bChapters.length } : prev));
             setChapterFileExists(true);
+            // Build a provisional Layer 0 alignment now. ReaderScreen will
+            // refresh it with the real epub spine length via ensureLayer0Fresh
+            // on first open.
+            ensureLayer0Fresh(params.bookId, m4bChapters, m4bChapters.length).catch(() => {});
             Alert.alert('Chapters Applied', `${m4bChapters.length} chapters loaded.`);
           },
         },
@@ -179,7 +209,8 @@ export default function BookDetailScreen() {
     if (!book || !user) return;
     setLookingUpChapters(true);
     try {
-      const result = await lookupChapters(book.title, book.author, book.audioPath);
+      const display = getBookDisplay(book);
+      const result = await lookupChapters(display.title, display.author, book.audioPath);
       if (!result || result.chapters.length < 2) {
         Alert.alert(
           'Not Found',
@@ -199,7 +230,87 @@ export default function BookDetailScreen() {
     }
   };
 
-  const handleOpenReader = () => navigation.navigate('Reader', { bookId: params.bookId });
+  const handleOpenReader = () => {
+    // If this book's audio is currently loaded in the player, tell the reader
+    // to land on the matching page instead of the last-read epub position.
+    const resumeFromAudio = nowPlayingBook?.id === params.bookId;
+    navigation.navigate('Reader', { bookId: params.bookId, resumeFromAudio });
+  };
+
+  const ensureHiddenEpubLoaded = async (): Promise<boolean> => {
+    if (hiddenEpubBookLoadedRef.current) return true;
+    const epubUri = await getCachedPath(params.bookId, 'epub', 'epub');
+    if (!epubUri) return false;
+    setHiddenEpubMounted(true);
+    // Wait until the bridge is ready before loading the book.
+    await new Promise<void>((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (hiddenEpubReadyRef.current || Date.now() - start > 20000) resolve();
+        else setTimeout(tick, 100);
+      };
+      tick();
+    });
+    if (!hiddenEpubReadyRef.current) return false;
+    hiddenEpubRef.current?.loadBookFromUri(epubUri);
+    hiddenEpubBookLoadedRef.current = true;
+    // Give the WebView a moment to parse the spine and report chapters.
+    await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+    return true;
+  };
+
+  const loadAiChapterText = async (promptId: AIPromptId): Promise<string | null> => {
+    const loaded = await ensureHiddenEpubLoaded();
+    if (!loaded) return null;
+    const MAX_CHARS = 120_000;
+
+    const safeGetChapter = async (index: number): Promise<string | null> => {
+      try {
+        const text = await hiddenEpubRef.current?.getChapterText(index, 20000);
+        return text && text.length > 0 ? text : null;
+      } catch (err) {
+        logger.warn('BookDetail: hidden getChapterText failed', { index, err });
+        return null;
+      }
+    };
+
+    if (promptId === 'story_so_far') {
+      const parts: string[] = [];
+      let used = 0;
+      for (let i = 0; i <= currentChapterIndex; i++) {
+        const t = await safeGetChapter(i);
+        if (!t) continue;
+        const remaining = MAX_CHARS - used;
+        if (remaining <= 0) break;
+        const header = `\n\n=== Chapter ${i + 1}${hiddenEpubChapters[i]?.title ? `: ${hiddenEpubChapters[i].title}` : ''} ===\n\n`;
+        const slice = t.length > remaining - header.length ? t.slice(0, Math.max(0, remaining - header.length)) : t;
+        parts.push(header + slice);
+        used += header.length + slice.length;
+      }
+      return parts.length > 0 ? parts.join('') : null;
+    }
+
+    if (promptId === 'jump_ahead') {
+      const next = currentChapterIndex + 1;
+      const total = hiddenEpubChapters.length || (book?.totalChapters ?? 0);
+      if (total > 0 && next >= total) return null;
+      return await safeGetChapter(next);
+    }
+
+    // left_off_recap (and fallback)
+    return await safeGetChapter(currentChapterIndex);
+  };
+
+  const handleOpenAiPrompt = async (promptId: AIPromptId) => {
+    if (promptId === 'jump_ahead') {
+      const total = book?.totalChapters ?? 0;
+      if (total > 0 && currentChapterIndex + 1 >= total) {
+        Alert.alert("You're at the end", "There's no next chapter to preview — you've reached the last chapter.");
+        return;
+      }
+    }
+    setAiPromptId(promptId);
+  };
 
   const handleCoverSelect = async (coverUrl: string, pickedTitle: string, pickedAuthor: string) => {
     if (!book || !user) return;
@@ -238,41 +349,15 @@ export default function BookDetailScreen() {
   };
 
   const handlePlayAudio = async () => {
-    if (!book) return;
+    if (!book || !user) return;
     setLoadingAudio(true);
     try {
-      const ext = book.audioPath.split('.').pop() ?? 'm4b';
-      const localAudioUri = await getCachedPath(params.bookId, 'audio', ext);
-      if (!localAudioUri) {
+      const prepared = await prepareBookForPlayback(user.uid, params.bookId);
+      if (!prepared) {
         Alert.alert('Not Downloaded', 'Download the audiobook before playing.');
         return;
       }
-      let chapters = createFallbackChapter(book.totalDurationSeconds);
-      const json = await readTextFromCache(params.bookId, 'chapters', 'json');
-      if (json) {
-        const parsed = parseChaptersJson(json);
-        if (parsed.length > 0) chapters = parsed;
-      }
-      const localBook: LocalBook = {
-        id: params.bookId,
-        title: book.title,
-        author: book.author,
-        coverUri: book.coverUrl ?? null,
-        epubPath: book.epubPath,
-        audioPath: book.audioPath,
-        syncMapPath: book.syncMapPath,
-        storageProvider: 'local',
-        syncMode: book.syncMode,
-        totalChapters: book.totalChapters,
-        totalDurationSeconds: book.totalDurationSeconds,
-        addedAt: book.addedAt,
-        updatedAt: book.updatedAt,
-        localEpubUri: null,
-        localAudioUri,
-        isDownloaded: true,
-        downloadProgress: 1,
-      };
-      await startPlayback(localBook, chapters);
+      await startPlayback(prepared.localBook, prepared.chapters, prepared.startTimestamp);
       navigateRoot('Player', { bookId: params.bookId });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -306,6 +391,7 @@ export default function BookDetailScreen() {
 
   const epubExt = (book.epubPath.split('.').pop() ?? 'epub').toUpperCase();
   const audioExt = (book.audioPath.split('.').pop() ?? 'm4b').toUpperCase();
+  const display = getBookDisplay(book);
 
   return (
     <View style={styles.screen}>
@@ -327,7 +413,7 @@ export default function BookDetailScreen() {
               <Image source={{ uri: book.coverUrl }} style={styles.cover} resizeMode="cover" />
             ) : (
               <View style={styles.coverPlaceholder}>
-                <Text style={styles.coverInitial}>{book.title[0]?.toUpperCase() ?? '?'}</Text>
+                <Text style={styles.coverInitial}>{display.title[0]?.toUpperCase() ?? '?'}</Text>
                 <Text style={styles.coverAddHint}>Tap to add cover</Text>
               </View>
             )}
@@ -336,8 +422,8 @@ export default function BookDetailScreen() {
             </View>
           </TouchableOpacity>
 
-          <Text style={styles.title}>{book.title}</Text>
-          {book.author ? <Text style={styles.author}>{book.author}</Text> : null}
+          <Text style={styles.title}>{display.title}</Text>
+          {display.author ? <Text style={styles.author}>{display.author}</Text> : null}
 
           <Text style={styles.heroMeta}>
             {book.totalChapters} chapters
@@ -396,6 +482,36 @@ export default function BookDetailScreen() {
                 </>
               )}
             </TouchableOpacity>
+          </View>
+
+          {/* ── AI Summary ───────────────────────────────────────────────── */}
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>AI SUMMARY</Text>
+            <Text style={styles.sectionBody}>
+              {currentChapterIndex > 0
+                ? `You're on chapter ${currentChapterIndex + 1}${book.totalChapters ? ` of ${book.totalChapters}` : ''}. Let Claude catch you up or preview what's next.`
+                : `Start reading, then come back — Claude can recap where you are, summarize the story so far, or preview what's ahead.`}
+            </Text>
+            <AIOption
+              icon="📍"
+              title="Where I left off"
+              subtitle="Refresh me on the chapter I stopped in."
+              onPress={() => handleOpenAiPrompt('left_off_recap')}
+            />
+            <AIOption
+              icon="📚"
+              title="What's happened so far"
+              subtitle="The story up to where I am now."
+              onPress={() => handleOpenAiPrompt('story_so_far')}
+              disabled={currentChapterIndex === 0}
+            />
+            <AIOption
+              icon="⏭️"
+              title="Jump ahead preview"
+              subtitle="Spoiler-light teaser of the next chapter."
+              onPress={() => handleOpenAiPrompt('jump_ahead')}
+              last
+            />
           </View>
 
           {/* ── Chapters ──────────────────────────────────────────────────── */}
@@ -459,9 +575,9 @@ export default function BookDetailScreen() {
           {/* ── Files ─────────────────────────────────────────────────────── */}
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>FILES</Text>
-            <FileRow icon="📖" label="EPUB" filename={`${book.title}.${epubExt.toLowerCase()}`} />
-            <FileRow icon="🎧" label="Audio" filename={`${book.title}.${audioExt.toLowerCase()}`} />
-            {book.syncMapPath && <FileRow icon="⟳" label="Sync" filename={`${book.title}.json`} />}
+            <FileRow icon="📖" label="EPUB" filename={`${display.title}.${epubExt.toLowerCase()}`} />
+            <FileRow icon="🎧" label="Audio" filename={`${display.title}.${audioExt.toLowerCase()}`} />
+            {book.syncMapPath && <FileRow icon="⟳" label="Sync" filename={`${display.title}.json`} />}
           </View>
 
           {/* ── Delete ────────────────────────────────────────────────────── */}
@@ -474,14 +590,75 @@ export default function BookDetailScreen() {
       <CoverPickerModal
         visible={coverPickerVisible}
         bookId={book.id}
-        initialTitle={book.title}
-        initialAuthor={book.author}
+        initialTitle={display.title}
+        initialAuthor={display.author}
         allowSkip={!!book.coverUrl}
         onSelect={handleCoverSelect}
         onSkip={() => setCoverPickerVisible(false)}
         onClose={() => setCoverPickerVisible(false)}
       />
+
+      {/* Hidden EpubWebView — mounted lazily to extract chapter text for AI. */}
+      {hiddenEpubMounted && (
+        <View style={styles.hiddenEpub} pointerEvents="none">
+          <EpubWebView
+            ref={hiddenEpubRef}
+            onReady={() => { hiddenEpubReadyRef.current = true; }}
+            onChapterList={setHiddenEpubChapters}
+            onError={(msg) => logger.warn('Hidden EpubWebView error', msg)}
+          />
+        </View>
+      )}
+
+      <AIInsightsModal
+        visible={aiPromptId !== null}
+        onClose={() => setAiPromptId(null)}
+        chapterContext={{
+          bookTitle: display.title,
+          author: display.author,
+          chapterTitle: hiddenEpubChapters[currentChapterIndex]?.title ?? '',
+          chapterIndex: currentChapterIndex,
+          totalChapters: hiddenEpubChapters.length || book.totalChapters || 1,
+        }}
+        loadChapterText={loadAiChapterText}
+        autoRunPromptId={aiPromptId ?? undefined}
+        onOpenSettings={() => {
+          (navigation as any).getParent()?.navigate('Main', { screen: 'Settings' });
+        }}
+      />
     </View>
+  );
+}
+
+function AIOption({
+  icon,
+  title,
+  subtitle,
+  onPress,
+  disabled,
+  last,
+}: {
+  icon: string;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  disabled?: boolean;
+  last?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.aiOption, last && styles.aiOptionLast, disabled && styles.aiOptionDisabled]}
+      onPress={onPress}
+      disabled={disabled}
+      activeOpacity={0.75}
+    >
+      <Text style={styles.aiOptionIcon}>{icon}</Text>
+      <View style={styles.aiOptionText}>
+        <Text style={[styles.aiOptionTitle, disabled && styles.dimText]}>{title}</Text>
+        <Text style={[styles.aiOptionSubtitle, disabled && styles.dimText]}>{subtitle}</Text>
+      </View>
+      <Text style={[styles.aiOptionChev, disabled && styles.dimText]}>›</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -694,4 +871,28 @@ const styles = StyleSheet.create({
 
   deleteBtn: { alignItems: 'center', paddingVertical: 16, marginTop: 6 },
   deleteBtnText: { color: C.red, fontSize: 14, fontWeight: '500', letterSpacing: 0.2 },
+
+  aiOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  aiOptionLast: { borderBottomWidth: 0, paddingBottom: 2 },
+  aiOptionDisabled: { opacity: 0.4 },
+  aiOptionIcon: { fontSize: 20, marginRight: 12, width: 26, textAlign: 'center' },
+  aiOptionText: { flex: 1 },
+  aiOptionTitle: { color: C.text, fontSize: 14, fontWeight: '600', marginBottom: 2 },
+  aiOptionSubtitle: { color: C.textMuted, fontSize: 12, lineHeight: 17 },
+  aiOptionChev: { color: C.textFaint, fontSize: 22, marginLeft: 6 },
+
+  hiddenEpub: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    left: -9999,
+    top: -9999,
+    opacity: 0,
+  },
 });

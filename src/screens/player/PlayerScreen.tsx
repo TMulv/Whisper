@@ -21,7 +21,9 @@ import { watchSyncState } from '@/services/firebase/firestoreService';
 import { writeTextToCache } from '@/services/storage/localStorageService';
 import { chaptersFromAudnexus, serializeChapters } from '@/services/audio/m4bParser';
 import { lookupChapters, lookupChaptersByAsin } from '@/services/audio/chapterLookupService';
+import { ensureLayer0Fresh } from '@/services/sync/alignmentStore';
 import { formatDuration } from '@/utils/timeUtils';
+import { getBookDisplay } from '@/utils/bookDisplay';
 import { FirestorePosition } from '@/types/firebase';
 import { M4BChapter } from '@/types/sync';
 import type { RootStackParamList } from '@/navigation/types';
@@ -138,6 +140,7 @@ export default function PlayerScreen() {
             const json = serializeChapters(m4bChapters);
             await writeTextToCache(json, params.bookId, 'chapters', 'json');
             setChapters(m4bChapters);
+            ensureLayer0Fresh(params.bookId, m4bChapters, m4bChapters.length).catch(() => {});
             Alert.alert('Chapters Applied', `${m4bChapters.length} chapters now active.`);
           },
         },
@@ -173,7 +176,8 @@ export default function PlayerScreen() {
     if (!book) return;
     setLookingUpChapters(true);
     try {
-      const result = await lookupChapters(book.title, book.author, book.audioPath);
+      const display = getBookDisplay(book);
+      const result = await lookupChapters(display.title, display.author, book.audioPath);
       if (!result || result.chapters.length < 2) {
         Alert.alert(
           'Not Found',
@@ -194,19 +198,22 @@ export default function PlayerScreen() {
   };
 
   const handleOpenReader = () => {
-    // Dismiss the Player modal then navigate into the nested LibraryStack → Reader
+    // Dismiss the Player modal then navigate into the nested LibraryStack → Reader.
+    // We're coming from the player with audio loaded, so ask the reader to align
+    // to the current audio position instead of the last-read epub page.
     (navigation as any).navigate('Main', {
       screen: 'Library',
       params: {
         screen: 'Reader',
-        params: { bookId: params.bookId },
+        params: { bookId: params.bookId, resumeFromAudio: true },
       },
     });
   };
 
   const coverUri = book?.coverUri ?? null;
-  const title = book?.title ?? 'Unknown Title';
-  const author = book?.author ?? '';
+  const { title, author } = book
+    ? getBookDisplay(book)
+    : { title: 'Unknown Title', author: '' };
   const chapterLabel = currentChapter?.title ?? (chapters.length > 0 ? chapters[0].title : '');
 
   return (
@@ -221,10 +228,24 @@ export default function PlayerScreen() {
       {/* Epub sync banner */}
       {epubSyncBanner && (
         <View style={styles.syncBanner}>
-          <Text style={styles.syncBannerText}>You were reading at {Math.round((epubSyncBanner.percentComplete ?? 0) * 100)}%</Text>
-          <TouchableOpacity onPress={() => setEpubSyncBanner(null)}>
-            <Text style={styles.syncBannerDismiss}>Dismiss</Text>
-          </TouchableOpacity>
+          <Text style={styles.syncBannerText}>
+            Reader left off at {Math.round((epubSyncBanner.percentComplete ?? 0) * 100)}%
+          </Text>
+          <View style={styles.syncBannerActions}>
+            <TouchableOpacity
+              onPress={() => {
+                if (epubSyncBanner.percentComplete && duration > 0) {
+                  seekTo(epubSyncBanner.percentComplete * duration);
+                }
+                setEpubSyncBanner(null);
+              }}
+            >
+              <Text style={styles.syncBannerJump}>Jump there</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setEpubSyncBanner(null)}>
+              <Text style={styles.syncBannerDismiss}>✕</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -411,8 +432,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 8,
   },
-  syncBannerText: { color: '#A8C8F0', fontSize: 13 },
-  syncBannerDismiss: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  syncBannerText: { color: '#A8C8F0', fontSize: 13, flex: 1 },
+  syncBannerActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  syncBannerJump: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  syncBannerDismiss: { color: 'rgba(255,255,255,0.5)', fontSize: 15 },
 
   scroll: {
     paddingHorizontal: 24,

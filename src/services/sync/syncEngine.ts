@@ -1,7 +1,5 @@
-import { SyncedPosition, PositionConflict, EpubPosition, AudioPosition } from '@/types/position';
-import { BookSyncMap } from '@/types/sync';
+import { SyncedPosition, PositionConflict } from '@/types/position';
 import { AUTO_SYNC_THRESHOLD_MS } from '@/constants/config';
-import { epubPositionToAudio, audioPositionToEpub } from './chapterMapper';
 import { writePosition, writeSyncState } from '@/services/firebase/firestoreService';
 import { FirestorePosition } from '@/types/firebase';
 
@@ -29,50 +27,9 @@ export function resolvePosition(
 }
 
 /**
- * Convert between epub and audio positions using the book's sync map.
- */
-export function convertPosition(
-  from: 'epub' | 'audio',
-  position: EpubPosition | AudioPosition,
-  deviceId: string,
-  bookId: string,
-  syncMap: BookSyncMap,
-): SyncedPosition {
-  const now = Date.now();
-
-  if (from === 'epub') {
-    const ep = position as EpubPosition;
-    const audio = epubPositionToAudio(ep, syncMap);
-    return {
-      bookId,
-      deviceId,
-      chapterIndex: ep.chapterIndex,
-      epubCfi: ep.cfi,
-      charOffset: ep.charOffset,
-      audioTimestamp: audio.timestampSeconds,
-      percentComplete: ep.percentComplete,
-      source: 'epub',
-      updatedAt: now,
-    };
-  } else {
-    const ap = position as AudioPosition;
-    const epub = audioPositionToEpub(ap, syncMap);
-    return {
-      bookId,
-      deviceId,
-      chapterIndex: ap.chapterIndex,
-      epubCfi: epub.cfi,
-      charOffset: epub.charOffset,
-      audioTimestamp: ap.timestampSeconds,
-      percentComplete: ap.percentComplete,
-      source: 'audio',
-      updatedAt: now,
-    };
-  }
-}
-
-/**
  * Persist a position to Firestore: writes both the per-device doc and syncState.
+ * Position math (epub ↔ audio conversion) now lives in `services/sync/handoff.ts`
+ * and is invoked by the call site before pushing.
  */
 export async function pushPosition(
   userId: string,
