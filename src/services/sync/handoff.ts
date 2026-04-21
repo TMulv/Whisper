@@ -1,10 +1,15 @@
 import {
   BookAlignment,
   ChapterAlignment,
+  ParagraphWeight,
   SentenceAnchor,
 } from '@/types/sync';
 import { EpubPosition, AudioPosition } from '@/types/position';
 import { buildChapterBaseCfi } from '@/utils/cfiUtils';
+import {
+  audioSecondsToParagraphCfi,
+  paragraphPositionToAudioSeconds,
+} from './paragraphWeights';
 
 // Single source of truth for bi-directional audiobook ↔ ebook handoff.
 // Replaces the old percent-of-book math that lived in prepareBookForPlayback,
@@ -83,6 +88,14 @@ function anchorsForChapter(
   return list && list.length > 0 ? list : [];
 }
 
+function weightsForChapter(
+  alignment: BookAlignment,
+  audioChapterIndex: number,
+): ParagraphWeight[] {
+  const list = alignment.paragraphWeights?.[audioChapterIndex];
+  return list && list.length > 0 ? list : [];
+}
+
 // ── Proportional helpers (L0 fallback) ──────────────────────────────────────
 
 function chapterProgressFromEpubPercent(
@@ -149,6 +162,30 @@ export function readerToAudio(
     };
   }
 
+  // L0.5: paragraph-weighted inside the chapter. If we've rendered this
+  // chapter in the reader at least once we have char counts per paragraph,
+  // which puts us at paragraph accuracy without any ASR.
+  const weights = weightsForChapter(alignment, ch.audioChapterIndex);
+  if (weights.length > 0) {
+    const chapterFraction = chapterProgressFromEpubPercent(
+      ch,
+      epub.percentComplete,
+    );
+    const seconds = paragraphPositionToAudioSeconds(
+      weights,
+      ch.audioStartSeconds,
+      ch.audioEndSeconds,
+      { cfi: epub.cfi || undefined, chapterFraction },
+    );
+    if (seconds !== null) {
+      return {
+        chapterIndex: ch.audioChapterIndex,
+        timestampSeconds: seconds,
+        percentComplete: epub.percentComplete,
+      };
+    }
+  }
+
   // L0: proportional within chapter.
   const progress = chapterProgressFromEpubPercent(ch, epub.percentComplete);
   const timestampSeconds =
@@ -204,6 +241,33 @@ export function audioToReader(
       percentComplete:
         a.percentComplete + t * (b.percentComplete - a.percentComplete),
     };
+  }
+
+  // L0.5: paragraph-weighted. If we have char counts for this chapter we can
+  // return the CFI of whichever paragraph is currently being narrated, which
+  // is what drives the page-follows-audio behaviour during immersion.
+  const weights = weightsForChapter(alignment, ch.audioChapterIndex);
+  if (weights.length > 0) {
+    const cfi = audioSecondsToParagraphCfi(
+      weights,
+      ch.audioStartSeconds,
+      ch.audioEndSeconds,
+      audio.timestampSeconds,
+    );
+    if (cfi) {
+      const progress = chapterProgressFromAudioSeconds(
+        ch,
+        audio.timestampSeconds,
+      );
+      return {
+        chapterIndex: ch.epubChapterIndex,
+        cfi,
+        charOffset: 0,
+        percentComplete:
+          ch.epubPercentStart +
+          progress * (ch.epubPercentEnd - ch.epubPercentStart),
+      };
+    }
   }
 
   // L0: proportional within chapter.

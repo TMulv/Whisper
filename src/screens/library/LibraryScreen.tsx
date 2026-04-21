@@ -53,6 +53,7 @@ import * as Crypto from 'expo-crypto';
 import { buildCachePath, ensureCacheDir } from '@/services/storage/localStorageService';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
+import BookSyncIndicator from '@/components/library/BookSyncIndicator';
 
 const ICLOUD_ENABLED_KEY = '@whisper/icloud_enabled';
 
@@ -121,10 +122,12 @@ function ShelfLine({ inset = 0 }: { inset?: number }) {
 
 function ShelfBook({
   book,
+  userId,
   onPress,
   onLongPress,
 }: {
   book: LocalBook;
+  userId: string | null;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -171,6 +174,7 @@ function ShelfBook({
         {/* Gloss/vignette */}
         <View pointerEvents="none" style={styles.coverGloss} />
         {!book.isDownloaded && <View style={styles.cloudDot} />}
+        <BookSyncIndicator userId={userId} bookId={book.id} />
       </Animated.View>
 
       <Text numberOfLines={2} style={styles.shelfTitle}>
@@ -190,11 +194,13 @@ function ShelfBook({
 function ShelfRow({
   row,
   index,
+  userId,
   onOpen,
   onDelete,
 }: {
   row: LocalBook[];
   index: number;
+  userId: string | null;
   onOpen: (b: LocalBook) => void;
   onDelete: (b: LocalBook) => void;
 }) {
@@ -225,6 +231,7 @@ function ShelfRow({
           <ShelfBook
             key={b.id}
             book={b}
+            userId={userId}
             onPress={() => onOpen(b)}
             onLongPress={() => onDelete(b)}
           />
@@ -790,9 +797,15 @@ export default function LibraryScreen() {
 
   const renderRow = useCallback(
     ({ item, index }: { item: LocalBook[]; index: number }) => (
-      <ShelfRow row={item} index={index} onOpen={handleOpenBook} onDelete={handleDeleteBook} />
+      <ShelfRow
+        row={item}
+        index={index}
+        userId={user?.uid ?? null}
+        onOpen={handleOpenBook}
+        onDelete={handleDeleteBook}
+      />
     ),
-    [handleOpenBook, handleDeleteBook],
+    [handleOpenBook, handleDeleteBook, user?.uid],
   );
 
   const renderHeader = () => {

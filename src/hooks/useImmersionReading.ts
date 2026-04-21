@@ -3,6 +3,7 @@ import { useProgress, usePlaybackState, State } from 'react-native-track-player'
 import { EpubWebViewRef } from '@/components/reader/EpubWebView';
 import { M4BChapter, BookAlignment } from '@/types/sync';
 import { getAlignment } from '@/services/sync/alignmentStore';
+import { audioToReader } from '@/services/sync/handoff';
 
 interface ImmersionReadingOptions {
   webViewRef: RefObject<EpubWebViewRef | null>;
@@ -19,12 +20,22 @@ export interface ImmersionState {
   currentAudioChapter: M4BChapter | null;
 }
 
-// Immersion mode is "audio plays, reader follows along." Phase 1 scope is
-// chapter-level: when the audio chapter changes, navigate the reader to the
-// matching epub chapter (looked up via the handoff alignment so M != N books
-// are handled correctly). The old sub-chapter per-2-second seekToPercent has
-// been removed — that was live-sync territory and relied on whole-book
-// percent drift that no longer exists.
+// Immersion mode is "audio plays, reader follows along." Two loops run while
+// enabled:
+//
+//   1. Chapter-switch loop — when the audio chapter index flips, navigate the
+//      reader to the matching epub chapter via the handoff alignment.
+//   2. Live-follow loop — every 500 ms (from useProgress) compute the
+//      paragraph fraction inside the current audio chapter and ask the epub
+//      WebView to highlight + smooth-scroll that paragraph. The bridge's
+//      `highlightProgress(ratio)` picks the block at index `r * blocks.length`
+//      inside the current chapter, which gives us paragraph-granular
+//      follow-along today — no Whisper, no CFI round-trip required.
+//
+// When L1 anchors (or L0.5 paragraph weights) exist for this chapter,
+// `audioToReader` returns a real CFI; a future bridge method `scrollToCfi`
+// would make the follow-along sentence-accurate. Until then, chapter-fraction
+// is a significant upgrade over the previous chapter-only behaviour.
 export function useImmersionReading({
   webViewRef,
   bookId,
@@ -99,10 +110,74 @@ export function useImmersionReading({
     webViewRef,
   ]);
 
+  // Live-follow: every 500 ms, ask the reader to highlight the paragraph that
+  // matches the current audio position inside its chapter. Chapter-fraction is
+  // derived from the audio timestamp relative to the current audio chapter's
+  // span, which makes this robust across M != N books (where audio chapter
+  // index doesn't match epub chapter index).
+  //
+  // Throttled on "paragraph changed": we only reissue the highlight when the
+  // rounded block index would move. That keeps the WebView's smooth-scroll
+  // from stuttering on every 500 ms tick.
+  const lastBlockRef = useRef<number>(-1);
+  useEffect(() => {
+    if (!enabled || !isPlaying || !currentAudioChapter) return;
+
+    // Prefer the resolver's percentComplete (honours L1 anchors + L0.5
+    // weights when available), falling back to chapter-local fraction.
+    let fraction = 0;
+    if (alignment) {
+      const resolved = audioToReader(
+        {
+          chapterIndex: currentAudioChapter.index,
+          timestampSeconds: position,
+          percentComplete: 0,
+        },
+        alignment,
+      );
+      const ch = alignment.chapters.find(
+        (c) => c.audioChapterIndex === currentAudioChapter.index,
+      );
+      if (ch) {
+        const span = ch.epubPercentEnd - ch.epubPercentStart;
+        if (span > 0) {
+          fraction = (resolved.percentComplete - ch.epubPercentStart) / span;
+        }
+      }
+    }
+    if (!alignment || !Number.isFinite(fraction) || fraction < 0) {
+      const chSpan =
+        currentAudioChapter.endSeconds - currentAudioChapter.startSeconds;
+      fraction =
+        chSpan > 0
+          ? (position - currentAudioChapter.startSeconds) / chSpan
+          : 0;
+    }
+    fraction = Math.max(0, Math.min(1, fraction));
+
+    // Approx paragraph index assuming ~20 visible blocks per chapter rendered
+    // in the current viewport. This is a heuristic bucket for throttling —
+    // the bridge picks the exact block from live DOM counts.
+    const bucket = Math.round(fraction * 40);
+    if (bucket === lastBlockRef.current) return;
+    lastBlockRef.current = bucket;
+    webViewRef.current?.highlightProgress(fraction);
+  }, [
+    enabled,
+    isPlaying,
+    position,
+    alignment,
+    currentAudioChapter?.index,
+    currentAudioChapter?.startSeconds,
+    currentAudioChapter?.endSeconds,
+    webViewRef,
+  ]);
+
   // Keep the reader's progress highlight cleared when immersion isn't active.
   useEffect(() => {
     if (!enabled || !isPlaying) {
       webViewRef.current?.clearHighlight();
+      lastBlockRef.current = -1;
     }
   }, [enabled, isPlaying, webViewRef]);
 

@@ -1,5 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BookAlignment, M4BChapter, SentenceAnchor } from '@/types/sync';
+import {
+  BookAlignment,
+  M4BChapter,
+  ParagraphWeight,
+  SentenceAnchor,
+} from '@/types/sync';
 import { buildLayer0 } from './alignmentBuilder';
 
 // Persistence for BookAlignment. AsyncStorage is adequate for Phase 1 — a
@@ -141,4 +146,46 @@ export async function setChapterAnchors(
 
   await saveAlignment(updated);
   return updated;
+}
+
+/**
+ * Record the paragraph-level weights for a single chapter. Reported by the
+ * epub WebView on first render of each chapter; used by `handoff.ts` for
+ * paragraph-accurate handoff before L1 anchors exist.
+ *
+ * Ignores the write if an identical list is already stored (avoids churning
+ * AsyncStorage every time the user revisits a chapter).
+ */
+export async function setChapterParagraphWeights(
+  bookId: string,
+  audioChapterIndex: number,
+  weights: ParagraphWeight[],
+): Promise<BookAlignment | null> {
+  const existing = await getAlignment(bookId);
+  if (!existing) return null;
+
+  const current = existing.paragraphWeights?.[audioChapterIndex];
+  if (weightsEqual(current, weights)) return existing;
+
+  const updated: BookAlignment = {
+    ...existing,
+    paragraphWeights: {
+      ...(existing.paragraphWeights ?? {}),
+      [audioChapterIndex]: weights,
+    },
+    updatedAt: Date.now(),
+  };
+  await saveAlignment(updated);
+  return updated;
+}
+
+function weightsEqual(
+  a: ParagraphWeight[] | undefined,
+  b: ParagraphWeight[],
+): boolean {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].cfi !== b[i].cfi || a[i].charCount !== b[i].charCount) return false;
+  }
+  return true;
 }

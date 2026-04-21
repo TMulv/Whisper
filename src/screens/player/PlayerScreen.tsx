@@ -21,7 +21,8 @@ import { watchSyncState } from '@/services/firebase/firestoreService';
 import { writeTextToCache } from '@/services/storage/localStorageService';
 import { chaptersFromAudnexus, serializeChapters } from '@/services/audio/m4bParser';
 import { lookupChapters, lookupChaptersByAsin } from '@/services/audio/chapterLookupService';
-import { ensureLayer0Fresh } from '@/services/sync/alignmentStore';
+import { ensureLayer0Fresh, getOrBuildLayer0 } from '@/services/sync/alignmentStore';
+import { readerToAudio } from '@/services/sync/handoff';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
 import { FirestorePosition } from '@/types/firebase';
@@ -233,11 +234,37 @@ export default function PlayerScreen() {
           </Text>
           <View style={styles.syncBannerActions}>
             <TouchableOpacity
-              onPress={() => {
-                if (epubSyncBanner.percentComplete && duration > 0) {
-                  seekTo(epubSyncBanner.percentComplete * duration);
-                }
+              onPress={async () => {
+                const banner = epubSyncBanner;
                 setEpubSyncBanner(null);
+                if (!banner) return;
+                try {
+                  // Route through the handoff resolver instead of the old raw
+                  // `percentComplete * duration` math, which ignored chapter
+                  // boundaries and could drift tens of minutes on a long
+                  // audiobook. L0 lands on the matching chapter; L0.5/L1 land
+                  // within that chapter at paragraph/sentence accuracy.
+                  const alignment = await getOrBuildLayer0(
+                    params.bookId,
+                    chapters,
+                    chapters.length,
+                  );
+                  const target = readerToAudio(
+                    {
+                      chapterIndex: banner.chapterIndex ?? 0,
+                      cfi: banner.epubCfi ?? '',
+                      charOffset: banner.charOffset ?? 0,
+                      percentComplete: banner.percentComplete ?? 0,
+                    },
+                    alignment,
+                  );
+                  seekTo(Math.max(0, target.timestampSeconds));
+                } catch {
+                  // Fallback to the old math if alignment build fails.
+                  if (banner.percentComplete && duration > 0) {
+                    seekTo(banner.percentComplete * duration);
+                  }
+                }
               }}
             >
               <Text style={styles.syncBannerJump}>Jump there</Text>

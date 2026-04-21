@@ -260,8 +260,12 @@ export default function ReaderScreen() {
       setCurrentChapterIndex(position.chapterIndex);
 
       // When user manually navigates to a different chapter (not via immersion
-      // sync) and audio is loaded, seek audio to the matching chapter start
-      // via the handoff resolver.
+      // sync) and audio is loaded, seek audio to match the new reader
+      // position via the handoff resolver. Previously we clobbered the
+      // resolver's answer with `audioStartSeconds`, which threw away L1
+      // anchor accuracy. Now we trust the resolver: L0 still returns the
+      // chapter start (correct), L0.5/L1 return a sub-chapter timestamp
+      // (also correct).
       if (!programmatic && !immersionActive && hasAudio && audioChapters.length > 0) {
         const epubChIdx = position.chapterIndex;
         if (epubChIdx !== lastEpubChapterRef.current) {
@@ -273,16 +277,15 @@ export default function ReaderScreen() {
           )
             .then((alignment) => {
               const target = readerToAudio(
-                { chapterIndex: epubChIdx, cfi: position.cfi, charOffset: 0, percentComplete: position.percentComplete },
+                {
+                  chapterIndex: epubChIdx,
+                  cfi: position.cfi,
+                  charOffset: 0,
+                  percentComplete: position.percentComplete,
+                },
                 alignment,
               );
-              const ch = alignment.chapters.find(
-                (c) => c.audioChapterIndex === target.chapterIndex,
-              );
-              // Seek to the start of the matching audio chapter, not into the
-              // middle — manual chapter nav is a "jump," not a fine-seek.
-              const targetSeconds = ch?.audioStartSeconds ?? target.timestampSeconds;
-              return seekToTimestamp(targetSeconds);
+              return seekToTimestamp(Math.max(0, target.timestampSeconds));
             })
             .catch(() => {});
         }
