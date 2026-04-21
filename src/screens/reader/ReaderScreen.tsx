@@ -16,12 +16,12 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import EpubWebView, { EpubWebViewRef, EpubChapter, EpubTheme } from '@/components/reader/EpubWebView';
 import SyncBanner from '@/components/reader/SyncBanner';
-import ReaderControls, {
+import ReaderDrawer, {
   ReaderFontFamily,
   ReaderMargin,
   FONT_FAMILY_VALUES,
   MARGIN_VALUES,
-} from '@/components/reader/ReaderControls';
+} from '@/components/reader/ReaderDrawer';
 import WordLookupModal from '@/components/reader/WordLookupModal';
 import ImmersionBar from '@/components/reader/ImmersionBar';
 import { useAuth } from '@/hooks/useAuth';
@@ -536,7 +536,7 @@ export default function ReaderScreen() {
         >
           {/* Prevent tap-through to backdrop from the panel itself */}
           <TouchableOpacity activeOpacity={1} onPress={() => {}}>
-            <ReaderControls
+            <ReaderDrawer
               chapters={chapters}
               currentChapterIndex={currentChapterIndex}
               fontSize={fontSize}
@@ -549,6 +549,7 @@ export default function ReaderScreen() {
               onMarginChange={handleMarginChange}
               onChapterSelect={handleChapterSelect}
               onClose={() => setControlsVisible(false)}
+              onHome={() => { setControlsVisible(false); navigation.goBack(); }}
             />
           </TouchableOpacity>
         </TouchableOpacity>

@@ -37,6 +37,8 @@ interface Props {
   onMarginChange: (margin: ReaderMargin) => void;
   onChapterSelect: (index: number) => void;
   onClose: () => void;
+  bookTitle?: string;
+  onHome: () => void;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 26];
@@ -58,7 +60,7 @@ const MARGINS: { value: ReaderMargin; label: string }[] = [
   { value: 'wide',   label: 'Wide' },
 ];
 
-export default function ReaderControls({
+export default function ReaderDrawer({
   chapters,
   currentChapterIndex,
   fontSize,
@@ -71,12 +73,34 @@ export default function ReaderControls({
   onMarginChange,
   onChapterSelect,
   onClose,
+  bookTitle,
+  onHome,
 }: Props) {
   const [tab, setTab] = useState<'display' | 'chapters'>('display');
 
   return (
     <View style={styles.panel}>
-      <View style={styles.handle} />
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={onHome}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={styles.headerBtn}
+        >
+          <Text style={styles.headerHome}>‹ Home</Text>
+        </TouchableOpacity>
+        {bookTitle ? (
+          <Text style={styles.headerTitle} numberOfLines={1}>{bookTitle}</Text>
+        ) : (
+          <View style={{ flex: 1 }} />
+        )}
+        <TouchableOpacity
+          onPress={onClose}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={styles.headerBtn}
+        >
+          <Text style={styles.headerClose}>✕</Text>
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.tabBar}>
         <TouchableOpacity
@@ -90,9 +114,6 @@ export default function ReaderControls({
           onPress={() => setTab('chapters')}
         >
           <Text style={[styles.tabText, tab === 'chapters' && styles.tabTextActive]}>Chapters</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-          <Text style={styles.closeBtnText}>✕</Text>
         </TouchableOpacity>
       </View>
 
@@ -228,6 +249,8 @@ export default function ReaderControls({
           <View style={{ height: 32 }} />
         </ScrollView>
       )}
+
+      <View style={styles.handle} />
     </View>
   );
 }
@@ -271,9 +294,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#DDD',
     borderRadius: 2,
     alignSelf: 'center',
-    marginTop: 10,
-    marginBottom: 2,
+    marginTop: 6,
+    marginBottom: 10,
   },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    gap: 8,
+  },
+  headerBtn: { paddingVertical: 4, paddingHorizontal: 4 },
+  headerHome: { fontSize: 15, color: '#1A1A2E', fontWeight: '600' },
+  headerTitle: { flex: 1, textAlign: 'center', fontSize: 14, color: '#555', fontWeight: '500' },
+  headerClose: { fontSize: 16, color: '#888' },
   tabBar: {
     flexDirection: 'row',
     paddingHorizontal: 16,
@@ -292,8 +327,6 @@ const styles = StyleSheet.create({
   tabActive: { backgroundColor: '#F0F0F8' },
   tabText: { fontSize: 14, color: '#888', fontWeight: '500' },
   tabTextActive: { color: '#1A1A2E', fontWeight: '700' },
-  closeBtn: { marginLeft: 'auto', padding: 8 },
-  closeBtnText: { fontSize: 16, color: '#888' },
 
   displayScroll: { maxHeight: '92%' },
   displayTab: { padding: 20, paddingBottom: 32 },
