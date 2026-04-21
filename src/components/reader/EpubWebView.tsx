@@ -20,6 +20,7 @@ import {
   JS_SET_MARGIN,
   JS_HIGHLIGHT_PROGRESS,
   JS_CLEAR_HIGHLIGHT,
+  JS_SEEK_TO_PERCENT,
 } from '@/constants/epubInjection';
 import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
@@ -46,15 +47,17 @@ export interface EpubWebViewRef {
   setFontFamily: (family: string) => void;
   setMargin: (margin: string) => void;
   highlightProgress: (ratio: number) => void;
+  seekToPercent: (percent: number) => void;
   clearHighlight: () => void;
   getChapterText: (index: number, timeoutMs?: number) => Promise<string>;
 }
 
 interface Props {
   onReady?: () => void;
-  onPositionChange?: (position: EpubPosition) => void;
+  onPositionChange?: (position: EpubPosition, programmatic: boolean) => void;
   onChapterList?: (chapters: EpubChapter[]) => void;
   onWordLookup?: (word: string) => void;
+  onParagraphTap?: (percentComplete: number, chapterIndex: number) => void;
   onError?: (message: string) => void;
 }
 
@@ -64,16 +67,17 @@ type BridgeMessage =
   | { type: 'BRIDGE_LOADED'; v?: string }
   | { type: 'READY' }
   | { type: 'LOCATIONS_READY'; count: number }
-  | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; percentComplete: number }
+  | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; percentComplete: number; programmatic?: boolean }
   | { type: 'CHAPTER_LIST'; chapters: EpubChapter[] }
   | { type: 'WORD_LOOKUP'; word: string }
+  | { type: 'PARAGRAPH_TAP'; percentComplete: number; chapterIndex: number }
   | { type: 'CHAPTER_TEXT'; requestId: string; ok: boolean; text?: string; title?: string; chapterIndex?: number; error?: string }
   | { type: 'ERROR'; message: string };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
-  { onReady, onPositionChange, onChapterList, onWordLookup, onError },
+  { onReady, onPositionChange, onChapterList, onWordLookup, onParagraphTap, onError },
   ref,
 ) {
   const webViewRef = useRef<WebView>(null);
@@ -166,6 +170,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     setFontFamily: (family: string) => inject(JS_SET_FONT_FAMILY(family)),
     setMargin: (margin: string) => inject(JS_SET_MARGIN(margin)),
     highlightProgress: (ratio: number) => inject(JS_HIGHLIGHT_PROGRESS(ratio)),
+    seekToPercent: (percent: number) => inject(JS_SEEK_TO_PERCENT(percent)),
     clearHighlight: () => inject(JS_CLEAR_HIGHLIGHT),
     getChapterText: (index: number, timeoutMs = 15000) => {
       const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -206,12 +211,15 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
 
         case 'POSITION_CHANGE':
-          onPositionChange?.({
-            chapterIndex: msg.chapterIndex,
-            cfi: msg.cfi,
-            charOffset: msg.charOffset,
-            percentComplete: msg.percentComplete,
-          });
+          onPositionChange?.(
+            {
+              chapterIndex: msg.chapterIndex,
+              cfi: msg.cfi,
+              charOffset: msg.charOffset,
+              percentComplete: msg.percentComplete,
+            },
+            msg.programmatic ?? false,
+          );
           break;
 
         case 'CHAPTER_LIST':
@@ -220,6 +228,10 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
 
         case 'WORD_LOOKUP':
           onWordLookup?.(msg.word);
+          break;
+
+        case 'PARAGRAPH_TAP':
+          onParagraphTap?.(msg.percentComplete, msg.chapterIndex);
           break;
 
         case 'CHAPTER_TEXT': {
@@ -245,7 +257,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
       }
     },
-    [onReady, onPositionChange, onChapterList, onWordLookup, onError, flushPending],
+    [onReady, onPositionChange, onChapterList, onWordLookup, onParagraphTap, onError, flushPending],
   );
 
   if (!bridgeUri) return null;
