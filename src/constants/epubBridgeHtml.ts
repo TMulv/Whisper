@@ -225,6 +225,23 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           postToRN({type:'CHAPTER_TEXT',requestId:requestId,ok:false,error:'getChapterText threw: '+(e.message||e)});
         }
       },
+      scrollToBookPercent: function(p) {
+        // Book-wide percent → CFI → display. Used by immersion live-follow
+        // to turn pages as audio progresses within a chapter. Sets
+        // _lastProgrammaticNavMs so the resulting POSITION_CHANGE is marked
+        // programmatic and doesn't trigger the reader→audio seek loop.
+        if (!_rendition || !_book || !_locationsReady) return;
+        _lastProgrammaticNavMs = Date.now();
+        try {
+          var cfi = _book.locations.cfiFromPercentage(Math.max(0,Math.min(1,p)));
+          if (!cfi) return;
+          _rendition.display(cfi).catch(function(e){
+            postToRN({type:'ERROR', message:'scrollToBookPercent rejected: '+(e&&e.message||e)+' p='+p});
+          });
+        } catch(e) {
+          postToRN({type:'ERROR', message:'scrollToBookPercent threw: '+(e&&e.message||e)+' p='+p});
+        }
+      },
       seekToPercent: function(p) {
         if (!_rendition || !_book) return;
         _lastProgrammaticNavMs = Date.now();

@@ -64,6 +64,9 @@ true;`;
 export const JS_SEEK_TO_PERCENT = (percent: number) =>
   `window.whisper.seekToPercent(${percent}); true;`;
 
+export const JS_SCROLL_TO_BOOK_PERCENT = (percent: number) =>
+  `window.whisper.scrollToBookPercent(${percent}); true;`;
+
 export const JS_CLEAR_HIGHLIGHT = `
 (function() {
   try {

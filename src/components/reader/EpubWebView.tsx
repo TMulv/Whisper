@@ -21,6 +21,7 @@ import {
   JS_HIGHLIGHT_PROGRESS,
   JS_CLEAR_HIGHLIGHT,
   JS_SEEK_TO_PERCENT,
+  JS_SCROLL_TO_BOOK_PERCENT,
 } from '@/constants/epubInjection';
 import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
@@ -48,6 +49,7 @@ export interface EpubWebViewRef {
   setMargin: (margin: string) => void;
   highlightProgress: (ratio: number) => void;
   seekToPercent: (percent: number) => void;
+  scrollToBookPercent: (percent: number) => void;
   clearHighlight: () => void;
   getChapterText: (index: number, timeoutMs?: number) => Promise<string>;
 }
@@ -171,6 +173,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     setMargin: (margin: string) => inject(JS_SET_MARGIN(margin)),
     highlightProgress: (ratio: number) => inject(JS_HIGHLIGHT_PROGRESS(ratio)),
     seekToPercent: (percent: number) => inject(JS_SEEK_TO_PERCENT(percent)),
+    scrollToBookPercent: (percent: number) => inject(JS_SCROLL_TO_BOOK_PERCENT(percent)),
     clearHighlight: () => inject(JS_CLEAR_HIGHLIGHT),
     getChapterText: (index: number, timeoutMs = 15000) => {
       const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

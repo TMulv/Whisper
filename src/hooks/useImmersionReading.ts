@@ -120,12 +120,18 @@ export function useImmersionReading({
   // rounded block index would move. That keeps the WebView's smooth-scroll
   // from stuttering on every 500 ms tick.
   const lastBlockRef = useRef<number>(-1);
+  // Book-wide page bucket — drives page-turn navigation so the reader
+  // advances through the book as audio plays, not just at chapter boundaries.
+  // 500 buckets ≈ 0.2% of the book per step, ≈ one page at typical audiobook
+  // pacing.
+  const lastPageBucketRef = useRef<number>(-1);
   useEffect(() => {
     if (!enabled || !isPlaying || !currentAudioChapter) return;
 
     // Prefer the resolver's percentComplete (honours L1 anchors + L0.5
     // weights when available), falling back to chapter-local fraction.
     let fraction = 0;
+    let bookPercent: number | null = null;
     if (alignment) {
       const resolved = audioToReader(
         {
@@ -135,6 +141,7 @@ export function useImmersionReading({
         },
         alignment,
       );
+      bookPercent = resolved.percentComplete;
       const ch = alignment.chapters.find(
         (c) => c.audioChapterIndex === currentAudioChapter.index,
       );
@@ -154,6 +161,19 @@ export function useImmersionReading({
           : 0;
     }
     fraction = Math.max(0, Math.min(1, fraction));
+
+    // Page-follow: turn the reader's page as audio advances within the
+    // chapter. Without this the reader sits on the first page of each
+    // chapter until the chapter-switch effect fires. Bucketed so we only
+    // issue a navigation when the rounded page index would change.
+    if (bookPercent !== null && Number.isFinite(bookPercent)) {
+      const clamped = Math.max(0, Math.min(1, bookPercent));
+      const pageBucket = Math.round(clamped * 500);
+      if (pageBucket !== lastPageBucketRef.current) {
+        lastPageBucketRef.current = pageBucket;
+        webViewRef.current?.scrollToBookPercent(clamped);
+      }
+    }
 
     // Approx paragraph index assuming ~20 visible blocks per chapter rendered
     // in the current viewport. This is a heuristic bucket for throttling —
@@ -178,6 +198,7 @@ export function useImmersionReading({
     if (!enabled || !isPlaying) {
       webViewRef.current?.clearHighlight();
       lastBlockRef.current = -1;
+      lastPageBucketRef.current = -1;
     }
   }, [enabled, isPlaying, webViewRef]);
 
