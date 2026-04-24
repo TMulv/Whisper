@@ -14,7 +14,10 @@ export function useEpubPosition(bookId: string, userId: string | null) {
 
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(async () => {
-        // Save locally as backup
+        // Save locally as backup. Skip zero-percent positions — they arrive
+        // before locations.generate() completes and would overwrite the last
+        // good saved position from the previous session.
+        if (newPosition.percentComplete === 0) return;
         try {
           const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
           await AsyncStorage.setItem(key, JSON.stringify(newPosition));
@@ -33,7 +36,9 @@ export function useEpubPosition(bookId: string, userId: string | null) {
     try {
       const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
       const raw = await AsyncStorage.getItem(key);
-      return raw ? JSON.parse(raw) : null;
+      const pos = raw ? (JSON.parse(raw) as EpubPosition) : null;
+      if (pos) setPosition(pos);
+      return pos;
     } catch {
       return null;
     }
