@@ -57,6 +57,7 @@ export interface EpubWebViewRef {
 interface Props {
   onReady?: () => void;
   onPositionChange?: (position: EpubPosition, programmatic: boolean) => void;
+  onLocationsReady?: () => void;
   onChapterList?: (chapters: EpubChapter[]) => void;
   onWordLookup?: (word: string) => void;
   onParagraphTap?: (percentComplete: number, chapterIndex: number) => void;
@@ -68,8 +69,8 @@ interface Props {
 type BridgeMessage =
   | { type: 'BRIDGE_LOADED'; v?: string }
   | { type: 'READY' }
-  | { type: 'LOCATIONS_READY'; count: number }
-  | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; percentComplete: number; programmatic?: boolean }
+  | { type: 'LOCATIONS_READY'; count: number; cfi: string; chapterIndex: number; charOffset: number; chapterFraction: number; percentComplete: number }
+  | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; chapterFraction: number; percentComplete: number; programmatic?: boolean }
   | { type: 'CHAPTER_LIST'; chapters: EpubChapter[] }
   | { type: 'WORD_LOOKUP'; word: string }
   | { type: 'PARAGRAPH_TAP'; percentComplete: number; chapterIndex: number }
@@ -79,7 +80,7 @@ type BridgeMessage =
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
-  { onReady, onPositionChange, onChapterList, onWordLookup, onParagraphTap, onError },
+  { onReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onError },
   ref,
 ) {
   const webViewRef = useRef<WebView>(null);
@@ -214,11 +215,19 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
 
         case 'POSITION_CHANGE':
+          logger.debug('EpubWebView: POSITION_CHANGE', {
+            cfi: msg.cfi,
+            chapterIndex: msg.chapterIndex,
+            percentComplete: msg.percentComplete,
+            chapterFraction: msg.chapterFraction,
+            programmatic: msg.programmatic,
+          });
           onPositionChange?.(
             {
               chapterIndex: msg.chapterIndex,
               cfi: msg.cfi,
               charOffset: msg.charOffset,
+              chapterFraction: msg.chapterFraction,
               percentComplete: msg.percentComplete,
             },
             msg.programmatic ?? false,
@@ -251,7 +260,31 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
         }
 
         case 'LOCATIONS_READY':
-          logger.debug(`epub locations ready: ${msg.count}`);
+          logger.info('EpubWebView: LOCATIONS_READY', {
+            count: msg.count,
+            hasCfi: !!msg.cfi,
+            cfi: msg.cfi || '(empty)',
+            chapterIndex: msg.chapterIndex,
+            percentComplete: msg.percentComplete,
+            chapterFraction: msg.chapterFraction,
+          });
+          // Update position with now-accurate percentComplete before signalling
+          // ready, so both state changes land in the same React render batch.
+          if (msg.cfi) {
+            onPositionChange?.(
+              {
+                chapterIndex: msg.chapterIndex,
+                cfi: msg.cfi,
+                charOffset: msg.charOffset,
+                chapterFraction: msg.chapterFraction,
+                percentComplete: msg.percentComplete,
+              },
+              true,
+            );
+          } else {
+            logger.warn('EpubWebView: LOCATIONS_READY had empty CFI — livePosition percentComplete will NOT be updated');
+          }
+          onLocationsReady?.();
           break;
 
         case 'ERROR':
@@ -260,7 +293,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
       }
     },
-    [onReady, onPositionChange, onChapterList, onWordLookup, onParagraphTap, onError, flushPending],
+    [onReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onError, flushPending],
   );
 
   if (!bridgeUri) return null;
