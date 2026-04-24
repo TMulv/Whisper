@@ -127,12 +127,43 @@ export function readerToAudio(
     return { chapterIndex: 0, timestampSeconds: 0, percentComplete: 0 };
   }
 
-  const ch =
-    findChapterByEpubIndex(alignment, epub.chapterIndex) ??
-    findChapterByEpubPercent(alignment, epub.percentComplete);
+  // When percentComplete is available, always use percent-based chapter lookup.
+  // epub.js reports chapterIndex by counting spine items, but the L0 alignment
+  // uses TOC-chapter counting — the two systems disagree for books with front
+  // matter or appendices, so the index lookup maps to the wrong audio chapter.
+  // percentComplete is a book-wide fraction that is independent of either
+  // counting scheme and always maps correctly.
+  const ch = epub.percentComplete > 0
+    ? findChapterByEpubPercent(alignment, epub.percentComplete)
+    : (findChapterByEpubIndex(alignment, epub.chapterIndex) ??
+       findChapterByEpubPercent(alignment, epub.percentComplete));
 
   if (!ch) {
     return { chapterIndex: 0, timestampSeconds: 0, percentComplete: 0 };
+  }
+
+  // Pre-L0: Use epub.js's paginated displayed.page/displayed.total as the chapter
+  // fraction when percentComplete is unavailable (0 before locations.generate()
+  // completes). Only valid when there are multiple audio chapters — for single-
+  // chapter audio the fraction is chapter-local and cannot be mapped to book-wide
+  // time without the total epub chapter count (which isn't stored in the alignment).
+  if (
+    epub.percentComplete === 0 &&
+    epub.chapterFraction >= 0 &&
+    alignment.chapters.length > 1
+  ) {
+    const timestampSeconds =
+      ch.audioStartSeconds +
+      epub.chapterFraction * (ch.audioEndSeconds - ch.audioStartSeconds);
+    return {
+      chapterIndex: ch.audioChapterIndex,
+      timestampSeconds: clamp(
+        timestampSeconds,
+        ch.audioStartSeconds,
+        ch.audioEndSeconds,
+      ),
+      percentComplete: epub.percentComplete,
+    };
   }
 
   // L1: use the anchor closest to this epub position if any exist.
@@ -202,12 +233,24 @@ export function audioToReader(
   alignment: BookAlignment | null,
 ): EpubPosition {
   if (!alignment || alignment.chapters.length === 0) {
-    return { chapterIndex: 0, cfi: '', charOffset: 0, percentComplete: 0 };
+    return {
+      chapterIndex: 0,
+      cfi: '',
+      charOffset: 0,
+      chapterFraction: -1,
+      percentComplete: 0,
+    };
   }
 
   const ch = findChapterByAudioSeconds(alignment, audio.timestampSeconds);
   if (!ch) {
-    return { chapterIndex: 0, cfi: '', charOffset: 0, percentComplete: 0 };
+    return {
+      chapterIndex: 0,
+      cfi: '',
+      charOffset: 0,
+      chapterFraction: -1,
+      percentComplete: 0,
+    };
   }
 
   const anchors = anchorsForChapter(alignment, ch.audioChapterIndex);
@@ -222,6 +265,7 @@ export function audioToReader(
         chapterIndex: ch.epubChapterIndex,
         cfi: a.epubCfi,
         charOffset: a.charOffset,
+        chapterFraction: -1,
         percentComplete: a.percentComplete,
       };
     }
@@ -237,6 +281,7 @@ export function audioToReader(
       chapterIndex: ch.epubChapterIndex,
       cfi: closer.epubCfi,
       charOffset: closer.charOffset,
+      chapterFraction: -1,
       percentComplete:
         a.percentComplete + t * (b.percentComplete - a.percentComplete),
     };
@@ -262,6 +307,7 @@ export function audioToReader(
         chapterIndex: ch.epubChapterIndex,
         cfi,
         charOffset: 0,
+        chapterFraction: -1,
         percentComplete:
           ch.epubPercentStart +
           progress * (ch.epubPercentEnd - ch.epubPercentStart),
@@ -281,6 +327,7 @@ export function audioToReader(
     chapterIndex: ch.epubChapterIndex,
     cfi: '',
     charOffset: 0,
+    chapterFraction: -1,
     percentComplete,
   };
 }
