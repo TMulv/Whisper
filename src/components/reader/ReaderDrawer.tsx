@@ -22,9 +22,9 @@ export const FONT_FAMILY_VALUES: Record<ReaderFontFamily, string> = {
 };
 
 export const MARGIN_VALUES: Record<ReaderMargin, string> = {
-  narrow: '12px 10px',
-  normal: '16px 20px',
-  wide: '20px 36px',
+  narrow: '48px 12px',
+  normal: '56px 24px',
+  wide: '56px 44px',
 };
 
 interface Props {
@@ -52,10 +52,10 @@ interface Props {
   audioChapters?: M4BChapter[];
   playbackRate?: number;
   onRateChange?: (rate: number) => void;
-  immersionActive?: boolean;
-  onImmersionToggle?: (active: boolean) => void;
   startingAudio?: boolean;
+  locationsReady?: boolean;
   onStartAudio?: () => void;
+  onPinPosition?: () => void;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 26];
@@ -101,10 +101,10 @@ export default function ReaderDrawer({
   audioChapters = [],
   playbackRate = 1,
   onRateChange = () => {},
-  immersionActive = false,
-  onImmersionToggle = () => {},
   startingAudio = false,
+  locationsReady = true,
   onStartAudio = () => {},
+  onPinPosition,
 }: Props) {
   const audioAvailable = hasAudio || bookHasAudio;
   const [tab, setTab] = useState<'audio' | 'display' | 'chapters'>(
@@ -160,17 +160,30 @@ export default function ReaderDrawer({
 
       {tab === 'audio' ? (
         hasAudio ? (
-          <AudioTransport
-            isPlaying={isPlaying}
-            position={position}
-            duration={duration}
-            currentChapter={currentChapter}
-            chapters={audioChapters}
-            playbackRate={playbackRate}
-            onRateChange={onRateChange}
-            immersionActive={immersionActive}
-            onImmersionToggle={onImmersionToggle}
-          />
+          <>
+            <AudioTransport
+              isPlaying={isPlaying}
+              position={position}
+              duration={duration}
+              currentChapter={currentChapter}
+              chapters={audioChapters}
+              playbackRate={playbackRate}
+              onRateChange={onRateChange}
+            />
+            {onPinPosition && (
+              <View style={styles.pinPositionRow}>
+                <TouchableOpacity
+                  style={[styles.pinPositionBtn, !locationsReady && styles.pinPositionBtnDisabled]}
+                  onPress={onPinPosition}
+                  disabled={!locationsReady}
+                >
+                  <Text style={[styles.pinPositionText, !locationsReady && styles.pinPositionTextDisabled]}>
+                    {locationsReady ? '📍 Pin position for audio' : 'Still loading pages…'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </>
         ) : (
           <View style={styles.startAudioPane}>
             <TouchableOpacity
@@ -184,6 +197,22 @@ export default function ReaderDrawer({
                 <Text style={styles.startAudioBtnText}>▶  Start audiobook</Text>
               )}
             </TouchableOpacity>
+            {startingAudio && !locationsReady && (
+              <Text style={styles.startAudioHint}>Finding your position…</Text>
+            )}
+            {onPinPosition && (
+              <View style={styles.pinPositionRow}>
+                <TouchableOpacity
+                  style={[styles.pinPositionBtn, !locationsReady && styles.pinPositionBtnDisabled]}
+                  onPress={onPinPosition}
+                  disabled={!locationsReady}
+                >
+                  <Text style={[styles.pinPositionText, !locationsReady && styles.pinPositionTextDisabled]}>
+                    {locationsReady ? '📍 Pin position for audio' : 'Still loading pages…'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )
       ) : tab === 'display' ? (
@@ -492,7 +521,7 @@ const styles = StyleSheet.create({
   chapterRowTextActive: { color: '#1A1A2E', fontWeight: '600' },
   currentMarker: { fontSize: 10, color: '#1A1A2E', marginLeft: 8 },
 
-  startAudioPane: { padding: 24, alignItems: 'center' },
+  startAudioPane: { padding: 24, alignItems: 'center', gap: 10 },
   startAudioBtn: {
     backgroundColor: '#1A1A2E',
     paddingHorizontal: 28,
@@ -502,4 +531,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   startAudioBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  startAudioHint: { fontSize: 13, color: '#888', fontStyle: 'italic' },
+
+  pinPositionRow: { marginTop: 8, alignItems: 'center' },
+  pinPositionBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#1A1A2E',
+  },
+  pinPositionBtnDisabled: { borderColor: '#CCC' },
+  pinPositionText: { fontSize: 14, color: '#1A1A2E', fontWeight: '600' },
+  pinPositionTextDisabled: { color: '#AAA' },
 });

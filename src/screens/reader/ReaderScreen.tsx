@@ -7,6 +7,8 @@ import {
   BackHandler,
   StatusBar,
   Platform,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,16 +24,16 @@ import ReaderDrawer, {
 } from '@/components/reader/ReaderDrawer';
 import TopDrawerModal from '@/components/reader/TopDrawerModal';
 import WordLookupModal from '@/components/reader/WordLookupModal';
+import { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
-import { useImmersionReading } from '@/hooks/useImmersionReading';
 import { useNowPlaying } from '@/context/NowPlayingContext';
 import { readSyncState } from '@/services/firebase/firestoreService';
 import { localListBooks } from '@/services/book/localBookStore';
 import { getCachedPath } from '@/services/storage/localStorageService';
 import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
 import { File, Directory, Paths } from 'expo-file-system';
-import { CACHE_DIR } from '@/constants/config';
+import { CACHE_DIR, POSITIONS_CACHE_KEY } from '@/constants/config';
 import { EpubPosition } from '@/types/position';
 import { FirestorePosition } from '@/types/firebase';
 import { pushPosition } from '@/services/sync/syncEngine';
@@ -139,12 +141,13 @@ export default function ReaderScreen() {
   const [syncBannerData, setSyncBannerData] = useState<FirestorePosition | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState('');
-  const [immersionActive, setImmersionActive] = useState(false);
-  const [immersionRate, setImmersionRate] = useState(1.0);
+  const [playbackRate, setPlaybackRate] = useState(1.0);
   const [tapSeekToast, setTapSeekToast] = useState(false);
   const [bookHasAudio, setBookHasAudio] = useState(false);
   const [startingAudio, setStartingAudio] = useState(false);
   const [bookTitle, setBookTitle] = useState<string | undefined>(undefined);
+  const [locationsReady, setLocationsReady] = useState(false);
+  const [pinSaved, setPinSaved] = useState(false);
 
   const { chapters: audioChapters, book: nowPlayingBook, startPlayback } = useNowPlaying();
   // Audio is "live" for this book only when *this* book's audio is loaded in
@@ -153,17 +156,17 @@ export default function ReaderScreen() {
   const audioLoadedForThisBook = nowPlayingBook?.id === params.bookId && audioChapters.length > 0;
   const hasAudio = audioLoadedForThisBook;
 
-  const immersion = useImmersionReading({
-    webViewRef,
-    bookId: params.bookId,
-    audioChapters,
-    epubChapterCount: chapters.length,
-    enabled: immersionActive,
-  });
+  // Live audio position — used for reader↔audio handoff and the transport UI.
+  const { position: audioPosition, duration: audioDuration } = useProgress(1000);
+  const playbackState = usePlaybackState();
+  const isAudioPlaying = playbackState.state === State.Playing;
+  const currentAudioChapter = audioChapters.length > 0
+    ? audioChapters.reduce((best, ch) => (ch.startSeconds <= audioPosition ? ch : best), audioChapters[0])
+    : null;
 
   const readyRef = useRef(false);
   const lastEpubChapterRef = useRef(-1);
-  const { onPositionChange, loadLocalPosition } = useEpubPosition(params.bookId, user?.uid ?? null);
+  const { position: livePosition, onPositionChange, loadLocalPosition } = useEpubPosition(params.bookId, user?.uid ?? null);
 
   // ── Mount: load device ID, persisted font size, initial position ───────────
   useEffect(() => {
@@ -308,7 +311,23 @@ export default function ReaderScreen() {
         webViewRef.current?.setMargin(MARGIN_VALUES[margin]);
 
         const saved = await loadLocalPosition();
-        if (params.resumeFromAudio && immersion.position > 0 && audioChapters.length > 0) {
+
+        // Resolve the audio timestamp to navigate to: prefer live position
+        // (audio is currently loaded and playing/paused in this session),
+        // then fall back to the persisted position from the last audio session.
+        let audioTimestampForHandoff = audioPosition;
+        if (params.resumeFromAudio && audioTimestampForHandoff === 0) {
+          try {
+            const audioKey = `${POSITIONS_CACHE_KEY}:${params.bookId}:audio`;
+            const raw = await AsyncStorage.getItem(audioKey);
+            if (raw) {
+              const parsed = JSON.parse(raw) as { timestampSeconds: number };
+              audioTimestampForHandoff = parsed.timestampSeconds ?? 0;
+            }
+          } catch { /* use 0 */ }
+        }
+
+        if (params.resumeFromAudio && audioTimestampForHandoff > 0 && audioChapters.length > 0) {
           // Navigate the reader to wherever audio currently is, using the
           // handoff resolver (chapter-accurate; sentence-accurate once L1
           // anchors exist for the current chapter).
@@ -317,10 +336,16 @@ export default function ReaderScreen() {
             audioChapters,
             chapters.length > 0 ? chapters.length : audioChapters.length,
           );
+          // Derive chapter index from chapters when immersion isn't active
+          const audioChapterIdx = currentAudioChapter?.index
+            ?? audioChapters.reduce(
+                (best, ch) => (ch.startSeconds <= audioTimestampForHandoff ? ch : best),
+                audioChapters[0],
+              ).index;
           const target = audioToReader(
             {
-              chapterIndex: immersion.currentAudioChapter?.index ?? 0,
-              timestampSeconds: immersion.position,
+              chapterIndex: audioChapterIdx,
+              timestampSeconds: audioTimestampForHandoff,
               percentComplete: 0,
             },
             alignment,
@@ -348,6 +373,39 @@ export default function ReaderScreen() {
       }
     })();
   }, [ready, user, params.bookId, params.resumeFromAudio]);
+
+  // ── Auto-save position on reader close (beforeRemove) ────────────────────
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', () => {
+      // Fire-and-forget: save position so audio can resume from here.
+      (async () => {
+        try {
+          const pos = await webViewRef.current?.getCurrentPosition();
+          if (!pos || pos.percentComplete === 0) return;
+          const key = `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`;
+          await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
+        } catch { /* silent — LOCATIONS_READY write is the safety net */ }
+      })();
+    });
+    return unsub;
+  }, [navigation, params.bookId]);
+
+  // ── Auto-save position on app background ─────────────────────────────────
+  useEffect(() => {
+    const handleAppState = (nextState: AppStateStatus) => {
+      if (nextState !== 'background' && nextState !== 'inactive') return;
+      (async () => {
+        try {
+          const pos = await webViewRef.current?.getCurrentPosition();
+          if (!pos || pos.percentComplete === 0) return;
+          const key = `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`;
+          await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
+        } catch { /* silent */ }
+      })();
+    };
+    const sub = AppState.addEventListener('change', handleAppState);
+    return () => sub.remove();
+  }, [params.bookId]);
 
   // ── Android back: save position before leaving ─────────────────────────────
   useEffect(() => {
@@ -387,7 +445,7 @@ export default function ReaderScreen() {
       // anchor accuracy. Now we trust the resolver: L0 still returns the
       // chapter start (correct), L0.5/L1 return a sub-chapter timestamp
       // (also correct).
-      if (!programmatic && !immersionActive && hasAudio && audioChapters.length > 0) {
+      if (!programmatic && hasAudio && audioChapters.length > 0) {
         const epubChIdx = position.chapterIndex;
         if (epubChIdx !== lastEpubChapterRef.current) {
           lastEpubChapterRef.current = epubChIdx;
@@ -402,6 +460,7 @@ export default function ReaderScreen() {
                   chapterIndex: epubChIdx,
                   cfi: position.cfi,
                   charOffset: 0,
+                  chapterFraction: -1,
                   percentComplete: position.percentComplete,
                 },
                 alignment,
@@ -432,7 +491,7 @@ export default function ReaderScreen() {
         }
       });
     },
-    [user, deviceId, params.bookId, onPositionChange, immersionActive, hasAudio, audioChapters, chapters.length],
+    [user, deviceId, params.bookId, onPositionChange, hasAudio, audioChapters, chapters.length],
   );
 
   const handleFontSizeChange = useCallback((px: number) => {
@@ -476,7 +535,7 @@ export default function ReaderScreen() {
     )
       .then((alignment) => {
         const target = readerToAudio(
-          { chapterIndex, cfi: '', charOffset: 0, percentComplete },
+          { chapterIndex, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete },
           alignment,
         );
         return seekToTimestamp(Math.max(0, target.timestampSeconds));
@@ -496,22 +555,47 @@ export default function ReaderScreen() {
     }
   }, [syncBannerData]);
 
-  // Start (or resume) audio for *this* book from the reader, then flip into
-  // immersion mode so the page scroll follows the audio automatically.
+  // Start audio for this book. Reads the saved epub position from AsyncStorage
+  // directly — no livePosition dependency, no locationsReady gate.
   const handleStartAudio = useCallback(async () => {
     if (!user || startingAudio) return;
     setStartingAudio(true);
     try {
-      const prepared = await prepareBookForPlayback(user.uid, params.bookId);
+      // Read the last saved epub position (written by LOCATIONS_READY, beforeRemove,
+      // AppState background listener, or Pin position). Falls back to 0 if absent.
+      let epubPos: EpubPosition | undefined;
+      try {
+        const key = `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`;
+        const raw = await AsyncStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw) as EpubPosition;
+          if (parsed.percentComplete > 0 || parsed.cfi) epubPos = parsed;
+        }
+      } catch { /* fall back to start */ }
+
+      const prepared = await prepareBookForPlayback(user.uid, params.bookId, epubPos);
       if (!prepared) return;
       await startPlayback(prepared.localBook, prepared.chapters, prepared.startTimestamp);
-      setImmersionActive(true);
     } catch (err) {
       logger.warn('ReaderScreen: start audio failed', err);
     } finally {
       setStartingAudio(false);
     }
   }, [user, params.bookId, startPlayback, startingAudio]);
+
+  // Pin the current reader position so audio knows exactly where to resume from.
+  const handlePinPosition = useCallback(async () => {
+    try {
+      const pos = await webViewRef.current?.getCurrentPosition();
+      if (!pos || pos.percentComplete === 0) return;
+      const key = `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`;
+      await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
+      setPinSaved(true);
+      setTimeout(() => setPinSaved(false), 2000);
+    } catch (err) {
+      logger.warn('ReaderScreen: pin position failed', err);
+    }
+  }, [params.bookId]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const bgColor = theme === 'dark' ? '#121212' : theme === 'sepia' ? '#f5efe0' : '#ffffff';
@@ -525,6 +609,7 @@ export default function ReaderScreen() {
         ref={webViewRef}
         onReady={() => { readyRef.current = true; setReady(true); }}
         onPositionChange={handlePositionChange}
+        onLocationsReady={() => setLocationsReady(true)}
         onChapterList={(list) => {
           setChapters(list);
           // The reader is the only place we know the real epub spine count.
@@ -608,17 +693,17 @@ export default function ReaderScreen() {
           onHome={() => { setControlsVisible(false); navigation.goBack(); }}
           hasAudio={hasAudio}
           bookHasAudio={bookHasAudio}
-          isPlaying={immersion.isPlaying}
-          position={immersion.position}
-          duration={immersion.duration}
-          currentChapter={immersion.currentAudioChapter}
+          isPlaying={isAudioPlaying}
+          position={audioPosition}
+          duration={audioDuration}
+          currentChapter={currentAudioChapter}
           audioChapters={audioChapters}
-          playbackRate={immersionRate}
-          onRateChange={setImmersionRate}
-          immersionActive={immersionActive}
-          onImmersionToggle={setImmersionActive}
+          playbackRate={playbackRate}
+          onRateChange={setPlaybackRate}
           startingAudio={startingAudio}
+          locationsReady={locationsReady}
           onStartAudio={handleStartAudio}
+          onPinPosition={handlePinPosition}
         />
       </TopDrawerModal>
 
@@ -626,6 +711,13 @@ export default function ReaderScreen() {
       {tapSeekToast && (
         <View style={styles.tapSeekToast} pointerEvents="none">
           <Text style={styles.tapSeekToastText}>▶ Audio jumping here</Text>
+        </View>
+      )}
+
+      {/* Pin position toast */}
+      {pinSaved && (
+        <View style={[styles.tapSeekToast, styles.pinSavedToast]} pointerEvents="none">
+          <Text style={styles.tapSeekToastText}>📍 Position saved</Text>
         </View>
       )}
 
@@ -683,5 +775,8 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 13,
     fontWeight: '600',
+  },
+  pinSavedToast: {
+    bottom: 120,
   },
 });

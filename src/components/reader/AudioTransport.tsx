@@ -4,7 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Switch,
   GestureResponderEvent,
 } from 'react-native';
 import { M4BChapter } from '@/types/sync';
@@ -28,8 +27,6 @@ interface Props {
   chapters: M4BChapter[];
   playbackRate: number;
   onRateChange: (rate: number) => void;
-  immersionActive: boolean;
-  onImmersionToggle: (active: boolean) => void;
 }
 
 export default function AudioTransport({
@@ -40,8 +37,6 @@ export default function AudioTransport({
   chapters,
   playbackRate,
   onRateChange,
-  immersionActive,
-  onImmersionToggle,
 }: Props) {
   const progress = duration > 0 ? Math.min(position / duration, 1) : 0;
 
@@ -77,21 +72,6 @@ export default function AudioTransport({
 
   return (
     <View style={styles.container}>
-      {/* Immersion toggle */}
-      <View style={styles.toggleRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.toggleLabel}>Follow along with audio</Text>
-          <Text style={styles.toggleSub}>Scroll the page automatically</Text>
-        </View>
-        <Switch
-          value={immersionActive}
-          onValueChange={onImmersionToggle}
-          trackColor={{ false: '#D8D8D8', true: '#1A1A2E' }}
-          thumbColor="#fff"
-          ios_backgroundColor="#D8D8D8"
-        />
-      </View>
-
       {/* Chapter name */}
       <Text style={styles.chapterLabel} numberOfLines={1}>
         {currentChapter?.title ?? ''}
@@ -156,24 +136,6 @@ export default function AudioTransport({
 const styles = StyleSheet.create({
   container: {
     padding: 16,
-  },
-
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    marginBottom: 8,
-  },
-  toggleLabel: {
-    fontSize: 15,
-    color: '#1A1A2E',
-    fontWeight: '600',
-  },
-  toggleSub: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 2,
   },
 
   chapterLabel: {

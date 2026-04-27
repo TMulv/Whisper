@@ -138,7 +138,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               _chapters = buildChapterList(nav.toc);
               postToRN({type:'CHAPTER_LIST',chapters:_chapters});
               postToRN({type:'READY'});
-              _book.locations.generate(1000).then(function(){ _locationsReady=true; setInterval(function(){ if(!_rendition||!_book||!_locationsReady) return; var _pol=_rendition.currentLocation&&_rendition.currentLocation(); if(!_pol||!_pol.start||!_pol.start.cfi) return; var _pcfi=_pol.start.cfi; var _pp=0; try{_pp=_book.locations.percentageFromCfi(_pcfi)||0;}catch(e){} if(_pp===0) return; var _pci=getCurrentChapterIndex(_pcfi); postToRN({type:'POSITION_CHANGE',cfi:_pcfi,chapterIndex:_pci,charOffset:_pol.start.offset||0,chapterFraction:-1,percentComplete:_pp,programmatic:false}); },2500); function _sendLocationsReady(){ var _rloc=_rendition&&_rendition.currentLocation&&_rendition.currentLocation(); var _rcfi='',_rco=0,_rci=0,_rp=0,_rcf=-1; if(_rloc&&_rloc.start&&_rloc.start.cfi){_rcfi=_rloc.start.cfi;_rco=_rloc.start.offset||0;_rci=getCurrentChapterIndex(_rcfi);try{_rp=_book.locations.percentageFromCfi(_rcfi)||0;}catch(e){} try{ var _rd=_rloc.start.displayed; if(_rd&&_rd.total>0){ _rcf=Math.max(0,(_rd.page-1)/_rd.total); } } catch(e){ _rcf=-1; } } postToRN({type:'LOCATIONS_READY',count:_book.locations.length(),cfi:_rcfi,chapterIndex:_rci,charOffset:_rco,chapterFraction:_rcf,percentComplete:_rp}); } var _rlocEarly=_rendition&&_rendition.currentLocation&&_rendition.currentLocation(); if(_rlocEarly&&_rlocEarly.start&&_rlocEarly.start.cfi){ _sendLocationsReady(); } else { setTimeout(_sendLocationsReady,150); } });
+              _book.locations.generate(1000).then(function(){ _locationsReady=true; function _sendLocationsReady(){ var _rloc=_rendition&&_rendition.currentLocation&&_rendition.currentLocation(); var _rcfi='',_rco=0,_rci=0,_rp=0,_rcf=-1; if(_rloc&&_rloc.start&&_rloc.start.cfi){_rcfi=_rloc.start.cfi;_rco=_rloc.start.offset||0;_rci=getCurrentChapterIndex(_rcfi);try{_rp=_book.locations.percentageFromCfi(_rcfi)||0;}catch(e){} try{ var _rd=_rloc.start.displayed; if(_rd&&_rd.total>0){ _rcf=Math.max(0,(_rd.page-1)/_rd.total); } } catch(e){ _rcf=-1; } } postToRN({type:'LOCATIONS_READY',count:_book.locations.length(),cfi:_rcfi,chapterIndex:_rci,charOffset:_rco,chapterFraction:_rcf,percentComplete:_rp}); } var _rlocEarly=_rendition&&_rendition.currentLocation&&_rendition.currentLocation(); if(_rlocEarly&&_rlocEarly.start&&_rlocEarly.start.cfi){ _sendLocationsReady(); } else { setTimeout(_sendLocationsReady,150); } });
             })
             .catch(function(e){ showLoading(false); postToRN({type:'ERROR',message:'Failed to render: '+(e.message||e)+' stack='+(e.stack||'')}); });
           _rendition.on('locationChanged', function(loc){ var cfi=loc.start&&loc.start.cfi; if(!cfi) return; var co=loc.start.offset||0; var ci=getCurrentChapterIndex(cfi); var p=0; if(_locationsReady){ try{ p=_book.locations.percentageFromCfi(cfi)||0; } catch(e){} } var cFrac=-1; try{ var d=loc.start&&loc.start.displayed; if(d&&d.total>0){ cFrac=Math.max(0,(d.page-1)/d.total); } } catch(e){ cFrac=-1; } var prog=(Date.now()-_lastProgrammaticNavMs)<1000; postToRN({type:'POSITION_CHANGE',cfi:cfi,chapterIndex:ci,charOffset:co,chapterFraction:cFrac,percentComplete:p,programmatic:prog}); });
@@ -225,62 +225,26 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           postToRN({type:'CHAPTER_TEXT',requestId:requestId,ok:false,error:'getChapterText threw: '+(e.message||e)});
         }
       },
-      scrollToBookPercent: function(p) {
-        // Book-wide percent → CFI → display. Used by immersion live-follow
-        // to turn pages as audio progresses within a chapter. Sets
-        // _lastProgrammaticNavMs so the resulting POSITION_CHANGE is marked
-        // programmatic and doesn't trigger the reader→audio seek loop.
-        if (!_rendition || !_book || !_locationsReady) return;
-        _lastProgrammaticNavMs = Date.now();
+      getCurrentPosition: function(requestId) {
         try {
-          var cfi = _book.locations.cfiFromPercentage(Math.max(0,Math.min(1,p)));
-          if (!cfi) return;
-          _rendition.display(cfi).catch(function(e){
-            postToRN({type:'ERROR', message:'scrollToBookPercent rejected: '+(e&&e.message||e)+' p='+p});
-          });
+          var loc = _rendition && _rendition.currentLocation && _rendition.currentLocation();
+          if (!loc || !loc.start || !loc.start.cfi) {
+            postToRN({type:'POSITION_RESULT',requestId:requestId,ok:false,error:'no location'});
+            return;
+          }
+          var cfi = loc.start.cfi;
+          var co = loc.start.offset || 0;
+          var ci = getCurrentChapterIndex(cfi);
+          var p = 0;
+          if (_locationsReady) { try { p = _book.locations.percentageFromCfi(cfi) || 0; } catch(e) {} }
+          var cFrac = -1;
+          try { var d = loc.start.displayed; if (d && d.total > 0) { cFrac = Math.max(0, (d.page-1)/d.total); } } catch(e) { cFrac = -1; }
+          postToRN({type:'POSITION_RESULT',requestId:requestId,ok:true,cfi:cfi,chapterIndex:ci,charOffset:co,chapterFraction:cFrac,percentComplete:p});
         } catch(e) {
-          postToRN({type:'ERROR', message:'scrollToBookPercent threw: '+(e&&e.message||e)+' p='+p});
+          postToRN({type:'POSITION_RESULT',requestId:requestId,ok:false,error:'getCurrentPosition threw: '+(e.message||e)});
         }
       },
-      seekToPercent: function(p) {
-        if (!_rendition || !_book) return;
-        _lastProgrammaticNavMs = Date.now();
-        try {
-          if (_locationsReady) {
-            var cfi = _book.locations.cfiFromPercentage(Math.max(0,Math.min(1,p)));
-            if (cfi) {
-              _rendition.display(cfi).then(function(){
-                try {
-                  var iframe = document.querySelector('iframe');
-                  if (!iframe) return;
-                  var doc = iframe.contentDocument||(iframe.contentWindow&&iframe.contentWindow.document);
-                  if (!doc) return;
-                  if (!doc.querySelector('#_wh_imm_style')) {
-                    var s=doc.createElement('style'); s.id='_wh_imm_style';
-                    s.textContent='.whisper-immersion-active{background:rgba(255,200,50,0.35)!important;border-radius:3px;transition:background 0.4s;}';
-                    (doc.head||doc.body).appendChild(s);
-                  }
-                  var prev=doc.querySelector('.whisper-immersion-active'); if(prev)prev.classList.remove('whisper-immersion-active');
-                  var blocks=Array.from(doc.querySelectorAll('p,h1,h2,h3,h4,li,div.para,blockquote')).filter(function(el){return el.textContent.trim().length>8;});
-                  if(blocks.length>0) blocks[0].classList.add('whisper-immersion-active');
-                } catch(e2){}
-              });
-              return;
-            }
-          }
-        } catch(e) {}
-      },
-      clearImmersionHighlight: function() {
-        try {
-          var iframe = document.querySelector('iframe');
-          if (!iframe) return;
-          var doc = iframe.contentDocument||(iframe.contentWindow&&iframe.contentWindow.document);
-          if (!doc) return;
-          var el = doc.querySelector('.whisper-immersion-active');
-          if (el) el.classList.remove('whisper-immersion-active');
-        } catch(e) {}
-      },
-            _nextPage: function(){if(_rendition)_rendition.next();},
+      _nextPage: function(){if(_rendition)_rendition.next();},
       _prevPage: function(){if(_rendition)_rendition.prev();}
     };
 

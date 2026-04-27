@@ -18,10 +18,6 @@ import {
   JS_SET_THEME,
   JS_SET_FONT_FAMILY,
   JS_SET_MARGIN,
-  JS_HIGHLIGHT_PROGRESS,
-  JS_CLEAR_HIGHLIGHT,
-  JS_SEEK_TO_PERCENT,
-  JS_SCROLL_TO_BOOK_PERCENT,
 } from '@/constants/epubInjection';
 import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
@@ -47,10 +43,7 @@ export interface EpubWebViewRef {
   setTheme: (theme: EpubTheme) => void;
   setFontFamily: (family: string) => void;
   setMargin: (margin: string) => void;
-  highlightProgress: (ratio: number) => void;
-  seekToPercent: (percent: number) => void;
-  scrollToBookPercent: (percent: number) => void;
-  clearHighlight: () => void;
+  getCurrentPosition: (timeoutMs?: number) => Promise<EpubPosition>;
   getChapterText: (index: number, timeoutMs?: number) => Promise<string>;
 }
 
@@ -71,6 +64,7 @@ type BridgeMessage =
   | { type: 'READY' }
   | { type: 'LOCATIONS_READY'; count: number; cfi: string; chapterIndex: number; charOffset: number; chapterFraction: number; percentComplete: number }
   | { type: 'POSITION_CHANGE'; cfi: string; chapterIndex: number; charOffset: number; chapterFraction: number; percentComplete: number; programmatic?: boolean }
+  | { type: 'POSITION_RESULT'; requestId: string; ok: boolean; cfi?: string; chapterIndex?: number; charOffset?: number; chapterFraction?: number; percentComplete?: number; error?: string }
   | { type: 'CHAPTER_LIST'; chapters: EpubChapter[] }
   | { type: 'WORD_LOOKUP'; word: string }
   | { type: 'PARAGRAPH_TAP'; percentComplete: number; chapterIndex: number }
@@ -88,6 +82,9 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
   const pendingCommandsRef = useRef<string[]>([]);
   const pendingTextRequestsRef = useRef<
     Map<string, { resolve: (text: string) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>
+  >(new Map());
+  const pendingPositionRequestsRef = useRef<
+    Map<string, { resolve: (pos: EpubPosition) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>
   >(new Map());
 
   // Resolve the bundled html asset URI once on mount. Loading via file URI
@@ -172,10 +169,17 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     setTheme: (theme: EpubTheme) => inject(JS_SET_THEME(theme)),
     setFontFamily: (family: string) => inject(JS_SET_FONT_FAMILY(family)),
     setMargin: (margin: string) => inject(JS_SET_MARGIN(margin)),
-    highlightProgress: (ratio: number) => inject(JS_HIGHLIGHT_PROGRESS(ratio)),
-    seekToPercent: (percent: number) => inject(JS_SEEK_TO_PERCENT(percent)),
-    scrollToBookPercent: (percent: number) => inject(JS_SCROLL_TO_BOOK_PERCENT(percent)),
-    clearHighlight: () => inject(JS_CLEAR_HIGHLIGHT),
+    getCurrentPosition: (timeoutMs = 3000) => {
+      const requestId = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise<EpubPosition>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingPositionRequestsRef.current.delete(requestId);
+          reject(new Error('Timed out getting current position'));
+        }, timeoutMs);
+        pendingPositionRequestsRef.current.set(requestId, { resolve, reject, timer });
+        inject(`window.whisper.getCurrentPosition(${JSON.stringify(requestId)}); true;`);
+      });
+    },
     getChapterText: (index: number, timeoutMs = 15000) => {
       const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       return new Promise<string>((resolve, reject) => {
@@ -245,6 +249,25 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
         case 'PARAGRAPH_TAP':
           onParagraphTap?.(msg.percentComplete, msg.chapterIndex);
           break;
+
+        case 'POSITION_RESULT': {
+          const pending = pendingPositionRequestsRef.current.get(msg.requestId);
+          if (!pending) break;
+          pendingPositionRequestsRef.current.delete(msg.requestId);
+          clearTimeout(pending.timer);
+          if (msg.ok) {
+            pending.resolve({
+              chapterIndex: msg.chapterIndex ?? 0,
+              cfi: msg.cfi ?? '',
+              charOffset: msg.charOffset ?? 0,
+              chapterFraction: msg.chapterFraction ?? -1,
+              percentComplete: msg.percentComplete ?? 0,
+            });
+          } else {
+            pending.reject(new Error(msg.error ?? 'Failed to get current position'));
+          }
+          break;
+        }
 
         case 'CHAPTER_TEXT': {
           const pending = pendingTextRequestsRef.current.get(msg.requestId);
