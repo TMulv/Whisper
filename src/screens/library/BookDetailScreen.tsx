@@ -29,6 +29,12 @@ import CoverPickerModal from '@/components/library/CoverPickerModal';
 import AIInsightsModal from '@/components/ai/AIInsightsModal';
 import EpubWebView, { EpubWebViewRef, EpubChapter } from '@/components/reader/EpubWebView';
 import type { AIPromptId } from '@/services/ai/aiPrompts';
+import TranscriptionShelf from '@/components/book/TranscriptionShelf';
+import {
+  kickoffAssemblyAiTranscription,
+  loadCachedAssemblyAiWords,
+  type TranscriptionStatus,
+} from '@/services/sync/assemblyAiAdapter';
 import { FirestoreBook } from '@/types/firebase';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
@@ -71,6 +77,7 @@ export default function BookDetailScreen() {
   const [aiPromptId, setAiPromptId] = useState<AIPromptId | null>(null);
   const [hiddenEpubMounted, setHiddenEpubMounted] = useState(false);
   const [hiddenEpubChapters, setHiddenEpubChapters] = useState<EpubChapter[]>([]);
+  const [txStatus, setTxStatus] = useState<TranscriptionStatus | null>(null);
   const { startPlayback, book: nowPlayingBook, clearNowPlaying, updateBookCover } = useNowPlaying();
 
   const hiddenEpubRef = useRef<EpubWebViewRef>(null);
@@ -109,6 +116,38 @@ export default function BookDetailScreen() {
       ]).start();
     });
   }, [user, params.bookId]);
+
+  // Track AssemblyAI transcription progress for the audiobook so we can render
+  // the shelf at the bottom of the screen. The adapter dedupes in-flight jobs
+  // and resumes from a persisted job id, so calling kickoff every mount is
+  // safe — the cached transcript path returns immediately with done=1.
+  useEffect(() => {
+    if (!user || !book) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ext = (book.audioPath?.split('.').pop() ?? 'm4b').toLowerCase();
+        const audioUri = await getCachedPath(params.bookId, 'audio', ext);
+        if (!audioUri) return;
+        const cached = await loadCachedAssemblyAiWords(audioUri);
+        if (cancelled) return;
+        if (cached && cached.length > 0) {
+          // Already done — don't render the shelf.
+          setTxStatus({ fraction: 1, phase: 'done', etaSeconds: 0 });
+          return;
+        }
+        // Starts (or resumes) the background job and streams status updates.
+        kickoffAssemblyAiTranscription(
+          audioUri,
+          (s) => { if (!cancelled) setTxStatus(s); },
+          book.totalDurationSeconds,
+        );
+      } catch (err) {
+        logger.warn('BookDetail: failed to track transcription', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, book, params.bookId]);
 
   const applyChapterResult = async (result: NonNullable<Awaited<ReturnType<typeof lookupChapters>>>) => {
     if (!book || !user) return;
@@ -504,6 +543,18 @@ export default function BookDetailScreen() {
             {book.syncMapPath && <FileRow icon="⟳" label="Sync" filename={`${display.title}.json`} />}
           </View>
 
+          {/* ── Transcription progress ─────────────────────────────────────── */}
+          {txStatus && txStatus.fraction < 1 && (
+            <View style={styles.shelfSection}>
+              <TranscriptionShelf
+                bookId={params.bookId}
+                progress={txStatus.fraction}
+                phase={txStatus.phase}
+                etaSeconds={txStatus.etaSeconds}
+              />
+            </View>
+          )}
+
           {/* ── Delete ────────────────────────────────────────────────────── */}
           <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete} activeOpacity={0.7}>
             <Text style={styles.deleteBtnText}>Remove Book</Text>
@@ -769,6 +820,7 @@ const styles = StyleSheet.create({
   fileRowLabel: { fontSize: 10, fontWeight: '700', color: C.textFaint, width: 44, letterSpacing: 0.5 },
   fileRowPath: { flex: 1, fontSize: 12, color: C.textMuted, textAlign: 'right' },
 
+  shelfSection: { marginBottom: 10 },
   deleteBtn: { alignItems: 'center', paddingVertical: 16, marginTop: 6 },
   deleteBtnText: { color: C.red, fontSize: 14, fontWeight: '500', letterSpacing: 0.2 },
 
