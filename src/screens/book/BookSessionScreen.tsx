@@ -120,7 +120,7 @@ export default function BookSessionScreen() {
     const unsub = navigation.addListener('beforeRemove', () => {
       // Epub — synchronous ref read; safe even as WebView begins unmounting.
       const epubPos = readerRef.current?.getLastKnownPosition();
-      if (epubPos && epubPos.percentComplete > 0) {
+      if (epubPos?.cfi) {
         AsyncStorage.setItem(
           `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
           JSON.stringify({ ...epubPos, savedAt: Date.now() }),

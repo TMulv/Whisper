@@ -14,10 +14,12 @@ export function useEpubPosition(bookId: string, userId: string | null) {
 
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(async () => {
-        // Save locally as backup. Skip zero-percent positions — they arrive
-        // before locations.generate() completes and would overwrite the last
-        // good saved position from the previous session.
-        if (newPosition.percentComplete === 0) return;
+        // Save locally as backup. Skip if we have no CFI — that means the
+        // bridge hasn't rendered a page yet and we have nothing to restore to.
+        // percentComplete is intentionally NOT guarded here: it is 0 until
+        // locations.generate() completes (can take seconds), but the CFI is
+        // always valid the moment a page renders and is sufficient for restore.
+        if (!newPosition.cfi) return;
         try {
           const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
           await AsyncStorage.setItem(key, JSON.stringify(newPosition));

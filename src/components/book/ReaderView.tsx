@@ -377,7 +377,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       (async () => {
         try {
           const pos = await webViewRef.current?.getCurrentPosition();
-          if (!pos || pos.percentComplete === 0) return;
+          if (!pos?.cfi) return;
           const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
           await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
         } catch { /* silent */ }
