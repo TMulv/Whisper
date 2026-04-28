@@ -5,7 +5,7 @@ import { RootStackParamList, AuthStackParamList } from './types';
 import MainTabNavigator from './MainTabNavigator';
 import SignInScreen from '@/screens/auth/SignInScreen';
 import SignUpScreen from '@/screens/auth/SignUpScreen';
-import PlayerScreen from '@/screens/player/PlayerScreen';
+import BookSessionScreen from '@/screens/book/BookSessionScreen';
 import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -44,9 +44,9 @@ export default function RootNavigator() {
         <>
           <Root.Screen name="Main" component={MainTabNavigator} />
           <Root.Screen
-            name="Player"
-            component={PlayerScreen}
-            options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            name="BookSession"
+            component={BookSessionScreen}
+            options={{ animation: 'fade' }}
           />
         </>
       ) : (

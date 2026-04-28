@@ -13,7 +13,7 @@ import { navigateRoot } from '@/navigation/navigationRef';
 import { getBookDisplay } from '@/utils/bookDisplay';
 
 export default function MiniPlayer() {
-  const { book } = useNowPlaying();
+  const { book, clearNowPlaying } = useNowPlaying();
   const { isPlaying, position, duration, play, pause } = useAudioPlayer();
 
   if (!book) return null;
@@ -29,10 +29,14 @@ export default function MiniPlayer() {
     }
   };
 
+  const handleClose = () => {
+    clearNowPlaying().catch(() => {});
+  };
+
   return (
     <Pressable
       style={styles.container}
-      onPress={() => navigateRoot('Player', { bookId: book.id })}
+      onPress={() => navigateRoot('BookSession', { bookId: book.id, mode: 'listen' })}
     >
       {/* Cover art */}
       {book.coverUri ? (
@@ -56,6 +60,17 @@ export default function MiniPlayer() {
         hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
       >
         <Text style={styles.playIcon}>{isPlaying ? '⏸' : '▶'}</Text>
+      </TouchableOpacity>
+
+      {/* Close — stops playback and dismisses the bar */}
+      <TouchableOpacity
+        style={styles.closeBtn}
+        onPress={handleClose}
+        hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+        accessibilityLabel="Stop and close mini player"
+        accessibilityRole="button"
+      >
+        <Text style={styles.closeIcon}>×</Text>
       </TouchableOpacity>
 
       {/* Progress strip */}
@@ -117,6 +132,18 @@ const styles = StyleSheet.create({
   playIcon: {
     fontSize: 20,
     color: '#1A1A2E',
+  },
+
+  closeBtn: {
+    width: 32,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeIcon: {
+    fontSize: 22,
+    color: '#999',
+    lineHeight: 24,
   },
 
   progressTrack: {

@@ -6,12 +6,10 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MainTabParamList, LibraryStackParamList } from './types';
 import LibraryScreen from '@/screens/library/LibraryScreen';
 import BookDetailScreen from '@/screens/library/BookDetailScreen';
-import ReaderScreen from '@/screens/reader/ReaderScreen';
 import SettingsScreen from '@/screens/settings/SettingsScreen';
-import FilesScreen from '@/screens/files/FilesScreen';
 import MiniPlayer from '@/components/player/MiniPlayer';
 import { useNowPlaying } from '@/context/NowPlayingContext';
-import { LibraryIcon, FilesIcon, SettingsIcon } from '@/components/navigation/TabIcons';
+import { LibraryIcon, SettingsIcon } from '@/components/navigation/TabIcons';
 
 // ── Library stack (Library → BookDetail → Reader) ────────────────────────────
 
@@ -29,11 +27,6 @@ function LibraryNavigator() {
         name="BookDetail"
         component={BookDetailScreen}
         options={{ title: 'Book', headerBackTitle: 'Library' }}
-      />
-      <LibraryStack.Screen
-        name="Reader"
-        component={ReaderScreen}
-        options={{ headerShown: false }}
       />
     </LibraryStack.Navigator>
   );
@@ -115,14 +108,6 @@ export default function MainTabNavigator() {
         options={{
           title: 'Library',
           tabBarIcon: ({ focused }) => <LibraryIcon focused={focused} />,
-        }}
-      />
-      <Tab.Screen
-        name="Files"
-        component={FilesScreen}
-        options={{
-          title: 'Files',
-          tabBarIcon: ({ focused }) => <FilesIcon focused={focused} />,
         }}
       />
       <Tab.Screen

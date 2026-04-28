@@ -29,7 +29,6 @@ import CoverPickerModal from '@/components/library/CoverPickerModal';
 import AIInsightsModal from '@/components/ai/AIInsightsModal';
 import EpubWebView, { EpubWebViewRef, EpubChapter } from '@/components/reader/EpubWebView';
 import type { AIPromptId } from '@/services/ai/aiPrompts';
-import { SyncMode } from '@/types/book';
 import { FirestoreBook } from '@/types/firebase';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
@@ -55,19 +54,6 @@ const C = {
   red: '#E85555',
 };
 
-const SYNC_MODES: { value: SyncMode; label: string; description: string }[] = [
-  {
-    value: 'chapter',
-    label: 'Chapter',
-    description: 'Jump to matching chapter — works with all files.',
-  },
-  {
-    value: 'percentage',
-    label: 'Percentage',
-    description: 'Sync by % complete — good fallback for mismatched chapters.',
-  },
-];
-
 export default function BookDetailScreen() {
   const { params } = useRoute<Props['route']>();
   const navigation = useNavigation<NavProp>();
@@ -78,7 +64,6 @@ export default function BookDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [loadingAudio, setLoadingAudio] = useState(false);
-  const [syncMode, setSyncMode] = useState<SyncMode>('chapter');
   const [chapterFileExists, setChapterFileExists] = useState(false);
   const [lookingUpChapters, setLookingUpChapters] = useState(false);
   const [coverPickerVisible, setCoverPickerVisible] = useState(false);
@@ -102,7 +87,6 @@ export default function BookDetailScreen() {
       const found = books.find((b) => b.id === params.bookId);
       if (found) {
         setBook(found);
-        setSyncMode(found.syncMode);
         if (!found.coverUrl) setCoverPickerVisible(true);
       }
       const chaptersUri = await getCachedPath(params.bookId, 'chapters', 'json');
@@ -125,21 +109,6 @@ export default function BookDetailScreen() {
       ]).start();
     });
   }, [user, params.bookId]);
-
-  const handleSaveSyncMode = async (mode: SyncMode) => {
-    if (!user || !book) return;
-    setSaving(true);
-    setSyncMode(mode);
-    try {
-      const updated = { ...book, syncMode: mode, updatedAt: Date.now() };
-      await localWriteBook(user.uid, book.id, updated);
-      writeBook(user.uid, book.id, updated).catch(() => {});
-    } catch {
-      Alert.alert('Error', 'Failed to save sync mode.');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const applyChapterResult = async (result: NonNullable<Awaited<ReturnType<typeof lookupChapters>>>) => {
     if (!book || !user) return;
@@ -224,10 +193,8 @@ export default function BookDetailScreen() {
   };
 
   const handleOpenReader = () => {
-    // If this book's audio is currently loaded in the player, tell the reader
-    // to land on the matching page instead of the last-read epub position.
     const resumeFromAudio = nowPlayingBook?.id === params.bookId;
-    navigation.navigate('Reader', { bookId: params.bookId, resumeFromAudio });
+    navigateRoot('BookSession', { bookId: params.bookId, mode: 'read', resumeFromAudio });
   };
 
   const ensureHiddenEpubLoaded = async (): Promise<boolean> => {
@@ -351,7 +318,7 @@ export default function BookDetailScreen() {
         return;
       }
       await startPlayback(prepared.localBook, prepared.chapters, prepared.startTimestamp);
-      navigateRoot('Player', { bookId: params.bookId });
+      navigateRoot('BookSession', { bookId: params.bookId, mode: 'listen' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       Alert.alert('Error', `Failed to start playback: ${msg}`);
@@ -528,34 +495,6 @@ export default function BookDetailScreen() {
               </TouchableOpacity>
             </View>
           )}
-
-          {/* ── Sync mode ─────────────────────────────────────────────────── */}
-          <View style={styles.section}>
-            <View style={styles.sectionLabelRow}>
-              <Text style={styles.sectionLabel}>SYNC MODE</Text>
-              {saving && <ActivityIndicator size="small" color={C.gold} style={{ marginLeft: 8 }} />}
-            </View>
-            {SYNC_MODES.map((mode) => {
-              const isSelected = syncMode === mode.value;
-              return (
-                <TouchableOpacity
-                  key={mode.value}
-                  style={styles.syncOption}
-                  onPress={() => handleSaveSyncMode(mode.value)}
-                  disabled={saving}
-                  activeOpacity={0.75}
-                >
-                  <View style={[styles.syncRadio, isSelected && styles.syncRadioActive]}>
-                    {isSelected && <View style={styles.syncRadioFill} />}
-                  </View>
-                  <View style={styles.syncTextWrap}>
-                    <Text style={styles.syncLabelText}>{mode.label}</Text>
-                    <Text style={styles.syncDesc}>{mode.description}</Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
 
           {/* ── Files ─────────────────────────────────────────────────────── */}
           <View style={styles.section}>
@@ -817,29 +756,6 @@ const styles = StyleSheet.create({
   },
   outlineBtnText: { color: C.gold, fontSize: 14, fontWeight: '600' },
 
-  syncOption: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-  },
-  syncRadio: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 1.5,
-    borderColor: C.borderBright,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-    marginRight: 12,
-  },
-  syncRadioActive: { borderColor: C.gold },
-  syncRadioFill: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.gold },
-  syncTextWrap: { flex: 1 },
-  syncLabelText: { fontSize: 14, fontWeight: '600', color: C.text, marginBottom: 2 },
-  syncDesc: { fontSize: 12, color: C.textMuted, lineHeight: 17 },
   dimText: { color: C.textFaint },
 
   fileRow: {
