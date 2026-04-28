@@ -5,14 +5,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  ActivityIndicator,
 } from 'react-native';
 import { EpubChapter, EpubTheme } from './EpubWebView';
-import { M4BChapter } from '@/types/sync';
-import AudioTransport from './AudioTransport';
+import { Highlight, HIGHLIGHT_COLORS } from '@/types/highlight';
 
 export type ReaderFontFamily = 'serif' | 'sans' | 'palatino' | 'mono';
 export type ReaderMargin = 'narrow' | 'normal' | 'wide';
+export type ReaderLineHeight = 1.2 | 1.4 | 1.6 | 1.8 | 2.0;
+export type ReaderProgressDisplay = 'page' | 'percent';
 
 export const FONT_FAMILY_VALUES: Record<ReaderFontFamily, string> = {
   serif: "Georgia,'Times New Roman',serif",
@@ -31,34 +31,34 @@ interface Props {
   chapters: EpubChapter[];
   currentChapterIndex: number;
   fontSize: number;
+  lineHeight: ReaderLineHeight;
   theme: EpubTheme;
   fontFamily: ReaderFontFamily;
   margin: ReaderMargin;
   onFontSizeChange: (px: number) => void;
+  onLineHeightChange: (value: ReaderLineHeight) => void;
   onThemeChange: (theme: EpubTheme) => void;
   onFontFamilyChange: (family: ReaderFontFamily) => void;
   onMarginChange: (margin: ReaderMargin) => void;
+  progressDisplay: ReaderProgressDisplay;
+  onProgressDisplayChange: (v: ReaderProgressDisplay) => void;
   onChapterSelect: (index: number) => void;
   onClose: () => void;
   bookTitle?: string;
   onHome: () => void;
-  // Audio
-  hasAudio?: boolean;
-  bookHasAudio?: boolean;
-  isPlaying?: boolean;
-  position?: number;
-  duration?: number;
-  currentChapter?: M4BChapter | null;
-  audioChapters?: M4BChapter[];
-  playbackRate?: number;
-  onRateChange?: (rate: number) => void;
-  startingAudio?: boolean;
-  locationsReady?: boolean;
-  onStartAudio?: () => void;
-  onPinPosition?: () => void;
+  highlights?: Highlight[];
+  onHighlightNavigate?: (cfiRange: string) => void;
+  onHighlightDelete?: (id: string) => void;
 }
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 26];
+const LINE_HEIGHTS: { value: ReaderLineHeight; label: string }[] = [
+  { value: 1.2, label: 'XS' },
+  { value: 1.4, label: 'S' },
+  { value: 1.6, label: 'M' },
+  { value: 1.8, label: 'L' },
+  { value: 2.0, label: 'XL' },
+];
 const THEMES: { value: EpubTheme; label: string; bg: string; fg: string }[] = [
   { value: 'light',  label: 'Light',  bg: '#fff',    fg: '#1a1a1a' },
   { value: 'sepia',  label: 'Sepia',  bg: '#f5efe0', fg: '#3b2b1a' },
@@ -81,35 +81,26 @@ export default function ReaderDrawer({
   chapters,
   currentChapterIndex,
   fontSize,
+  lineHeight,
   theme,
   fontFamily,
   margin,
   onFontSizeChange,
+  onLineHeightChange,
   onThemeChange,
   onFontFamilyChange,
   onMarginChange,
+  progressDisplay,
+  onProgressDisplayChange,
   onChapterSelect,
   onClose,
   bookTitle,
   onHome,
-  hasAudio = false,
-  bookHasAudio = false,
-  isPlaying = false,
-  position = 0,
-  duration = 0,
-  currentChapter = null,
-  audioChapters = [],
-  playbackRate = 1,
-  onRateChange = () => {},
-  startingAudio = false,
-  locationsReady = true,
-  onStartAudio = () => {},
-  onPinPosition,
+  highlights = [],
+  onHighlightNavigate,
+  onHighlightDelete,
 }: Props) {
-  const audioAvailable = hasAudio || bookHasAudio;
-  const [tab, setTab] = useState<'audio' | 'display' | 'chapters'>(
-    audioAvailable ? 'audio' : 'display',
-  );
+  const [tab, setTab] = useState<'display' | 'chapters' | 'highlights'>('display');
 
   return (
     <>
@@ -136,14 +127,6 @@ export default function ReaderDrawer({
       </View>
 
       <View style={styles.tabBar}>
-        {audioAvailable && (
-          <TouchableOpacity
-            style={[styles.tab, tab === 'audio' && styles.tabActive]}
-            onPress={() => setTab('audio')}
-          >
-            <Text style={[styles.tabText, tab === 'audio' && styles.tabTextActive]}>Audio</Text>
-          </TouchableOpacity>
-        )}
         <TouchableOpacity
           style={[styles.tab, tab === 'display' && styles.tabActive]}
           onPress={() => setTab('display')}
@@ -156,66 +139,17 @@ export default function ReaderDrawer({
         >
           <Text style={[styles.tabText, tab === 'chapters' && styles.tabTextActive]}>Chapters</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, tab === 'highlights' && styles.tabActive]}
+          onPress={() => setTab('highlights')}
+        >
+          <Text style={[styles.tabText, tab === 'highlights' && styles.tabTextActive]}>
+            {highlights.length > 0 ? `Notes (${highlights.length})` : 'Notes'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      {tab === 'audio' ? (
-        hasAudio ? (
-          <>
-            <AudioTransport
-              isPlaying={isPlaying}
-              position={position}
-              duration={duration}
-              currentChapter={currentChapter}
-              chapters={audioChapters}
-              playbackRate={playbackRate}
-              onRateChange={onRateChange}
-            />
-            {onPinPosition && (
-              <View style={styles.pinPositionRow}>
-                <TouchableOpacity
-                  style={[styles.pinPositionBtn, !locationsReady && styles.pinPositionBtnDisabled]}
-                  onPress={onPinPosition}
-                  disabled={!locationsReady}
-                >
-                  <Text style={[styles.pinPositionText, !locationsReady && styles.pinPositionTextDisabled]}>
-                    {locationsReady ? '📍 Pin position for audio' : 'Still loading pages…'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </>
-        ) : (
-          <View style={styles.startAudioPane}>
-            <TouchableOpacity
-              style={styles.startAudioBtn}
-              onPress={onStartAudio}
-              disabled={startingAudio}
-            >
-              {startingAudio ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.startAudioBtnText}>▶  Start audiobook</Text>
-              )}
-            </TouchableOpacity>
-            {startingAudio && !locationsReady && (
-              <Text style={styles.startAudioHint}>Finding your position…</Text>
-            )}
-            {onPinPosition && (
-              <View style={styles.pinPositionRow}>
-                <TouchableOpacity
-                  style={[styles.pinPositionBtn, !locationsReady && styles.pinPositionBtnDisabled]}
-                  onPress={onPinPosition}
-                  disabled={!locationsReady}
-                >
-                  <Text style={[styles.pinPositionText, !locationsReady && styles.pinPositionTextDisabled]}>
-                    {locationsReady ? '📍 Pin position for audio' : 'Still loading pages…'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        )
-      ) : tab === 'display' ? (
+      {tab === 'display' ? (
         <ScrollView style={styles.displayScroll} contentContainerStyle={styles.displayTab}>
           <Text style={styles.controlLabel}>Text size</Text>
           <View style={styles.fontSizeRow}>
@@ -239,6 +173,22 @@ export default function ReaderDrawer({
               </TouchableOpacity>
             ))}
             <Text style={styles.fontSizeLarge}>A</Text>
+          </View>
+
+          <Text style={[styles.controlLabel, { marginTop: 22 }]}>Line spacing</Text>
+          <View style={styles.lineHeightRow}>
+            {LINE_HEIGHTS.map((lh) => (
+              <TouchableOpacity
+                key={lh.value}
+                style={[styles.lineHeightBtn, lineHeight === lh.value && styles.lineHeightBtnActive]}
+                onPress={() => onLineHeightChange(lh.value)}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+              >
+                <Text style={[styles.lineHeightBtnText, lineHeight === lh.value && styles.lineHeightBtnTextActive]}>
+                  {lh.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
 
           <Text style={[styles.controlLabel, { marginTop: 22 }]}>Font</Text>
@@ -313,9 +263,28 @@ export default function ReaderDrawer({
               </TouchableOpacity>
             ))}
           </View>
+          <Text style={[styles.controlLabel, { marginTop: 22 }]}>Progress display</Text>
+          <View style={styles.progressRow}>
+            {([
+              { value: 'page', label: 'Page' },
+              { value: 'percent', label: '%' },
+            ] as { value: ReaderProgressDisplay; label: string }[]).map((opt) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={[styles.progressChip, progressDisplay === opt.value && styles.progressChipActive]}
+                onPress={() => onProgressDisplayChange(opt.value)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.progressChipText, progressDisplay === opt.value && styles.progressChipTextActive]}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <View style={{ height: 20 }} />
         </ScrollView>
-      ) : (
+      ) : tab === 'chapters' ? (
         <ScrollView style={styles.chapterList} keyboardShouldPersistTaps="handled">
           {chapters.map((ch) => (
             <TouchableOpacity
@@ -344,6 +313,45 @@ export default function ReaderDrawer({
               )}
             </TouchableOpacity>
           ))}
+          <View style={{ height: 32 }} />
+        </ScrollView>
+      ) : (
+        <ScrollView style={styles.chapterList} keyboardShouldPersistTaps="handled">
+          {highlights.length === 0 ? (
+            <View style={styles.emptyHighlights}>
+              <Text style={styles.emptyHighlightsText}>
+                Long-press text in the book to highlight it.
+              </Text>
+            </View>
+          ) : (
+            highlights
+              .slice()
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((h) => {
+                const swatchColor = HIGHLIGHT_COLORS.find((c) => c.hex === h.color)?.hex ?? h.color;
+                return (
+                  <View key={h.id} style={styles.highlightRow}>
+                    <TouchableOpacity
+                      style={styles.highlightRowContent}
+                      onPress={() => onHighlightNavigate?.(h.cfiRange)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.highlightSwatch, { backgroundColor: swatchColor }]} />
+                      <Text style={styles.highlightText} numberOfLines={3}>
+                        {h.text}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.highlightDeleteBtn}
+                      onPress={() => onHighlightDelete?.(h.id)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={styles.highlightDeleteText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })
+          )}
           <View style={{ height: 32 }} />
         </ScrollView>
       )}
@@ -443,6 +451,22 @@ const styles = StyleSheet.create({
   fontSizeBtnText: { color: '#555', fontWeight: '600' },
   fontSizeBtnTextActive: { color: '#fff' },
 
+  lineHeightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  lineHeightBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center',
+  },
+  lineHeightBtnActive: { backgroundColor: '#1A1A2E' },
+  lineHeightBtnText: { color: '#555', fontWeight: '600', fontSize: 13 },
+  lineHeightBtnTextActive: { color: '#fff' },
+
   fontFamilyRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   fontFamilyChip: {
     flex: 1,
@@ -507,6 +531,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
+  progressRow: { flexDirection: 'row', gap: 8 },
+  progressChip: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    backgroundColor: '#FAFAFA',
+    alignItems: 'center',
+  },
+  progressChipActive: { backgroundColor: '#1A1A2E', borderColor: '#1A1A2E' },
+  progressChipText: { fontSize: 14, color: '#555', fontWeight: '600' },
+  progressChipTextActive: { color: '#fff' },
+
   chapterList: { maxHeight: 380 },
   chapterRow: {
     flexDirection: 'row',
@@ -521,27 +559,20 @@ const styles = StyleSheet.create({
   chapterRowTextActive: { color: '#1A1A2E', fontWeight: '600' },
   currentMarker: { fontSize: 10, color: '#1A1A2E', marginLeft: 8 },
 
-  startAudioPane: { padding: 24, alignItems: 'center', gap: 10 },
-  startAudioBtn: {
-    backgroundColor: '#1A1A2E',
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: 24,
-    minWidth: 180,
-    alignItems: 'center',
-  },
-  startAudioBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  startAudioHint: { fontSize: 13, color: '#888', fontStyle: 'italic' },
+  emptyHighlights: { padding: 32, alignItems: 'center' },
+  emptyHighlightsText: { fontSize: 14, color: '#999', textAlign: 'center', lineHeight: 20 },
 
-  pinPositionRow: { marginTop: 8, alignItems: 'center' },
-  pinPositionBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: '#1A1A2E',
+  highlightRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#F0F0F0',
   },
-  pinPositionBtnDisabled: { borderColor: '#CCC' },
-  pinPositionText: { fontSize: 14, color: '#1A1A2E', fontWeight: '600' },
-  pinPositionTextDisabled: { color: '#AAA' },
+  highlightRowContent: { flex: 1, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  highlightSwatch: { width: 12, height: 12, borderRadius: 6, marginTop: 3, flexShrink: 0 },
+  highlightText: { flex: 1, fontSize: 14, color: '#333', lineHeight: 20, fontStyle: 'italic' },
+  highlightDeleteBtn: { paddingLeft: 12, paddingTop: 2 },
+  highlightDeleteText: { fontSize: 13, color: '#BBB' },
 });
