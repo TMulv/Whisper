@@ -1,0 +1,297 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Animated,
+  BackHandler,
+  Platform,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { RootStackParamList, BookSessionMode } from '@/navigation/types';
+import { useAuth } from '@/hooks/useAuth';
+import { useNowPlaying } from '@/context/NowPlayingContext';
+import { localListBooks } from '@/services/book/localBookStore';
+import { getCachedPath } from '@/services/storage/localStorageService';
+import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
+import {
+  loadCachedAssemblyAiWords,
+} from '@/services/sync/assemblyAiAdapter';
+import {
+  findAudioWordMatch,
+  tokenizeSnippet,
+} from '@/services/sync/handoff';
+import TrackPlayer from 'react-native-track-player';
+import { POSITIONS_CACHE_KEY } from '@/constants/config';
+import { logger } from '@/utils/logger';
+import ReaderView, { ReaderViewRef } from '@/components/book/ReaderView';
+import ListenView from '@/components/book/ListenView';
+import ModeToggle from '@/components/book/ModeToggle';
+
+type Props = NativeStackScreenProps<RootStackParamList, 'BookSession'>;
+
+const FADE_MS = 180;
+
+export default function BookSessionScreen() {
+  const { params } = useRoute<Props['route']>();
+  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const { book: nowPlayingBook, chapters: audioChapters, startPlayback } = useNowPlaying();
+
+  const [mode, setMode] = useState<BookSessionMode>(params.mode);
+  const [hasEpub, setHasEpub] = useState(false);
+  const [hasAudio, setHasAudio] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const resumeFromAudio = !!params.resumeFromAudio;
+
+  const readerRef = useRef<ReaderViewRef>(null);
+  const readerOpacity = useRef(new Animated.Value(params.mode === 'read' ? 1 : 0)).current;
+  const listenOpacity = useRef(new Animated.Value(params.mode === 'listen' ? 1 : 0)).current;
+
+  const audioLoadedForThisBook = nowPlayingBook?.id === params.bookId;
+  const showToggle = hasEpub && hasAudio;
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const books = await localListBooks(user.uid);
+        const meta = books.find((b) => b.id === params.bookId);
+        if (cancelled || !meta) return;
+        const epubExists = !!meta.epubPath;
+        let audioExists = false;
+        if (meta.audioPath) {
+          const ext = meta.audioPath.split('.').pop() ?? 'm4b';
+          const audioUri = await getCachedPath(params.bookId, 'audio', ext);
+          audioExists = !!audioUri;
+        }
+        if (!cancelled) {
+          setHasEpub(epubExists);
+          setHasAudio(audioExists);
+        }
+      } catch (err) {
+        logger.warn('BookSession: failed to detect available formats', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, params.bookId]);
+
+  useEffect(() => {
+    const parent = navigation.getParent();
+    parent?.setOptions({ tabBarStyle: { display: 'none' } });
+    return () => {
+      parent?.setOptions({
+        tabBarStyle: {
+          borderTopWidth: 0,
+          backgroundColor: '#FAF7F1',
+          height: 64 + (Platform.OS === 'ios' ? 18 : 0),
+          paddingTop: 6,
+        },
+      });
+    };
+  }, [navigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      navigation.goBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [navigation]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', () => {
+      (async () => {
+        try {
+          const pos = await readerRef.current?.getCurrentPosition();
+          if (!pos || pos.percentComplete === 0) return;
+          const key = `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`;
+          await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
+        } catch { /* silent */ }
+      })();
+    });
+    return unsub;
+  }, [navigation, params.bookId]);
+
+  const animateTo = useCallback((next: BookSessionMode) => {
+    Animated.parallel([
+      Animated.timing(readerOpacity, {
+        toValue: next === 'read' ? 1 : 0,
+        duration: FADE_MS,
+        useNativeDriver: true,
+      }),
+      Animated.timing(listenOpacity, {
+        toValue: next === 'listen' ? 1 : 0,
+        duration: FADE_MS,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [readerOpacity, listenOpacity]);
+
+  const handleSwitchMode = useCallback(async (next: BookSessionMode) => {
+    if (next === mode || switching) return;
+
+    if (next === 'listen') {
+      if (!audioLoadedForThisBook && user && hasAudio) {
+        setSwitching(true);
+        try {
+          const livePos = await readerRef.current?.getCurrentPosition();
+          const epubPos = livePos && (livePos.percentComplete > 0 || livePos.cfi)
+            ? livePos
+            : undefined;
+          const prepared = await prepareBookForPlayback(user.uid, params.bookId, epubPos ?? undefined);
+          if (prepared) {
+            const audioPath = prepared.localBook.localAudioUri;
+            let startTs = prepared.startTimestamp;
+            if (audioPath) {
+              try {
+                const cachedWords = await loadCachedAssemblyAiWords(audioPath);
+                const snippetWords = await readerRef.current?.getVisibleSnippet(8, 1500);
+                if (cachedWords && cachedWords.length > 0 && snippetWords && snippetWords.length >= 3) {
+                  const tokens = tokenizeSnippet(snippetWords.join(' '));
+                  const matched = findAudioWordMatch(tokens, cachedWords, prepared.startTimestamp);
+                  if (matched !== null) {
+                    startTs = matched;
+                    logger.info('BookSession: word-match start', {
+                      hint: prepared.startTimestamp,
+                      matched,
+                      drift: Math.round(matched - prepared.startTimestamp),
+                    });
+                  }
+                }
+              } catch (err) {
+                logger.warn('BookSession: word-match failed, falling back to L0', err);
+              }
+            }
+            await startPlayback(prepared.localBook, prepared.chapters, startTs);
+          }
+        } catch (err) {
+          logger.warn('BookSession: failed to prepare audio on switch', err);
+        } finally {
+          setSwitching(false);
+        }
+      }
+    } else if (next === 'read') {
+      if (audioLoadedForThisBook && audioChapters.length > 0) {
+        try {
+          const audioPos = await TrackPlayer.getProgress().then((p) => p.position).catch(() => 0);
+          if (audioPos > 0) {
+            const audioChIdx = audioChapters.reduce(
+              (best, ch) => (ch.startSeconds <= audioPos ? ch : best),
+              audioChapters[0],
+            ).index;
+            await readerRef.current?.syncToAudio(audioPos, audioChIdx);
+          }
+        } catch (err) {
+          logger.warn('BookSession: failed to sync reader to audio', err);
+        }
+      }
+    }
+
+    setMode(next);
+    animateTo(next);
+  }, [mode, switching, audioLoadedForThisBook, audioChapters, hasAudio, user, params.bookId, startPlayback, animateTo]);
+
+  return (
+    <View style={styles.container}>
+      <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityLabel="Close book"
+          accessibilityRole="button"
+        >
+          <Text style={styles.backIcon}>⌄</Text>
+        </TouchableOpacity>
+
+        <View style={styles.toggleSlot}>
+          {showToggle && (
+            <ModeToggle
+              mode={mode}
+              onChange={handleSwitchMode}
+              outOfSync={false}
+            />
+          )}
+        </View>
+
+        <View style={styles.rightSlot} />
+      </View>
+
+      <View style={styles.body}>
+        {hasEpub && (
+          <Animated.View
+            style={[styles.viewLayer, { opacity: readerOpacity }]}
+            pointerEvents={mode === 'read' ? 'auto' : 'none'}
+          >
+            <ReaderView
+              ref={readerRef}
+              bookId={params.bookId}
+              resumeFromAudio={resumeFromAudio}
+              onClose={() => navigation.goBack()}
+            />
+          </Animated.View>
+        )}
+
+        {hasAudio && (
+          <Animated.View
+            style={[styles.viewLayer, { opacity: listenOpacity }]}
+            pointerEvents={mode === 'listen' ? 'auto' : 'none'}
+          >
+            <ListenView bookId={params.bookId} />
+          </Animated.View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0D0D1A',
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    backgroundColor: 'transparent',
+    zIndex: 100,
+  },
+  backBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backIcon: {
+    fontSize: 28,
+    color: '#fff',
+    lineHeight: 28,
+    marginTop: -6,
+  },
+  toggleSlot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rightSlot: {
+    width: 40,
+    height: 40,
+  },
+  body: {
+    flex: 1,
+    position: 'relative',
+  },
+  viewLayer: {
+    ...StyleSheet.absoluteFillObject,
+  },
+});
