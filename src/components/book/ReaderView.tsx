@@ -105,6 +105,7 @@ export interface ReaderViewProps {
 
 export interface ReaderViewRef {
   getCurrentPosition: () => Promise<EpubPosition | null>;
+  getLastKnownPosition: () => EpubPosition | null;
   getVisibleSnippet: (n?: number, timeoutMs?: number) => Promise<string[] | null>;
   syncToAudio: (timestampSeconds: number, audioChapterIdx: number) => Promise<void>;
 }
@@ -149,6 +150,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const readyRef = useRef(false);
   const lastEpubChapterRef = useRef(-1);
+  const livePositionRef = useRef<EpubPosition | null>(null);
   const [pendingCfi, setPendingCfi] = useState<string | null>(null);
   const { position: livePosition, onPositionChange, loadLocalPosition } = useEpubPosition(bookId, user?.uid ?? null);
 
@@ -160,6 +162,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         return null;
       }
     },
+    getLastKnownPosition: () => livePositionRef.current,
     getVisibleSnippet: async (n = 8, timeoutMs = 2000) => {
       try {
         return (await webViewRef.current?.getVisibleSnippet(n, timeoutMs)) ?? null;
@@ -183,13 +186,19 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           },
           alignment,
         );
-        if (target.cfi) webViewRef.current?.goTo(target.cfi);
-        else webViewRef.current?.goToChapter(target.chapterIndex);
+        if (target.cfi) {
+          webViewRef.current?.goTo(target.cfi);
+        } else if (target.chapterIndex !== currentChapterIndex) {
+          // L0 only: we know the chapter but not the position within it.
+          // Only navigate if the chapter actually changed — jumping to chapter
+          // start when the reader is already mid-chapter would lose position.
+          webViewRef.current?.goToChapter(target.chapterIndex);
+        }
       } catch (err) {
         logger.warn('ReaderView: syncToAudio failed', err);
       }
     },
-  }), [bookId, audioChapters, chapters.length]);
+  }), [bookId, audioChapters, chapters.length, currentChapterIndex]);
 
   useEffect(() => {
     getOrCreateDeviceId().then(setDeviceId);
@@ -380,6 +389,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const handlePositionChange = useCallback(
     (position: EpubPosition, programmatic: boolean) => {
+      livePositionRef.current = position;
       setCurrentChapterIndex(position.chapterIndex);
 
       if (!programmatic && hasAudio && audioChapters.length > 0) {

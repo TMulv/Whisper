@@ -94,11 +94,11 @@ function formatEta(seconds: number | null): string {
 }
 
 function phaseLabel(phase: TranscriptionPhase, progress: number): string {
-  if (progress >= 1) return 'Word-accurate ready';
-  if (phase === 'upload') return 'Uploading audio';
-  if (phase === 'submit') return 'Submitting';
-  if (phase === 'poll') return 'Transcribing';
-  return 'Word-accurate ready';
+  if (progress >= 1) return 'Sync complete';
+  if (phase === 'upload') return 'Matching audiobook to book…';
+  if (phase === 'submit') return 'Matching audiobook to book…';
+  if (phase === 'poll') return 'Matching audiobook to book…';
+  return 'Matching audiobook to book…';
 }
 
 export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds }: Props) {
@@ -110,9 +110,15 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
   const activeIdx = filledCount < SPINE_COUNT ? filledCount : -1;
   const activeFillRatio = activeIdx >= 0 ? subPct / 5 : 0;
 
-  // Pulsing dot in the eyebrow
+  const done = progress >= 1;
+
+  // Pulsing dot — stops when sync is complete
   const pulse = useRef(new Animated.Value(0)).current;
   useEffect(() => {
+    if (done) {
+      pulse.setValue(1);
+      return;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
@@ -121,7 +127,7 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
     );
     loop.start();
     return () => loop.stop();
-  }, [pulse]);
+  }, [pulse, done]);
   const dotOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
   const dotScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.2] });
 
@@ -159,21 +165,17 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
   return (
     <View style={styles.card}>
       <View style={styles.eyebrow}>
-        <Animated.View
-          style={[
-            styles.eyebrowDot,
-            { opacity: dotOpacity, transform: [{ scale: dotScale }] },
-          ]}
-        />
-        <Text style={styles.eyebrowText}>BUILDING WORD-ACCURATE SYNC</Text>
+        {done ? (
+          <Text style={styles.doneCheck}>✓</Text>
+        ) : (
+          <Animated.View
+            style={[styles.eyebrowDot, { opacity: dotOpacity, transform: [{ scale: dotScale }] }]}
+          />
+        )}
+        <Text style={[styles.eyebrowText, done && styles.eyebrowTextDone]}>
+          {done ? 'Sync complete' : phaseLabel(phase, progress)}
+        </Text>
       </View>
-
-      <Text style={styles.heading}>
-        Your library, <Text style={styles.headingItalic}>arriving</Text>
-      </Text>
-      <Text style={styles.meta}>
-        Twenty volumes — one for each five percent. The book in progress glows warm as it fills.
-      </Text>
 
       <View style={styles.counterRow}>
         <Text style={styles.counter}>
@@ -315,6 +317,15 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: C.giltDeep,
     letterSpacing: 2.6,
+  },
+  eyebrowTextDone: {
+    color: C.gilt,
+  },
+  doneCheck: {
+    fontSize: 11,
+    color: C.gilt,
+    fontWeight: '700',
+    lineHeight: 14,
   },
 
   heading: {

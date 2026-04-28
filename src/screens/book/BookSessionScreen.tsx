@@ -57,6 +57,13 @@ export default function BookSessionScreen() {
   const listenOpacity = useRef(new Animated.Value(params.mode === 'listen' ? 1 : 0)).current;
 
   const audioLoadedForThisBook = nowPlayingBook?.id === params.bookId;
+
+  // Refs mirror live audio state so beforeRemove can read them without
+  // re-registering the listener on every chapter/load change.
+  const audioLoadedRef = useRef(audioLoadedForThisBook);
+  const audioChaptersRef = useRef(audioChapters);
+  useEffect(() => { audioLoadedRef.current = audioLoadedForThisBook; }, [audioLoadedForThisBook]);
+  useEffect(() => { audioChaptersRef.current = audioChapters; }, [audioChapters]);
   const showToggle = hasEpub && hasAudio;
 
   useEffect(() => {
@@ -111,14 +118,39 @@ export default function BookSessionScreen() {
 
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', () => {
-      (async () => {
-        try {
-          const pos = await readerRef.current?.getCurrentPosition();
-          if (!pos || pos.percentComplete === 0) return;
-          const key = `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`;
-          await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
-        } catch { /* silent */ }
-      })();
+      // Epub — synchronous ref read; safe even as WebView begins unmounting.
+      const epubPos = readerRef.current?.getLastKnownPosition();
+      if (epubPos && epubPos.percentComplete > 0) {
+        AsyncStorage.setItem(
+          `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
+          JSON.stringify({ ...epubPos, savedAt: Date.now() }),
+        ).catch(() => {});
+      }
+
+      // Audio — fire-and-forget; TrackPlayer is an app-level singleton and
+      // stays alive after this screen unmounts, so the async call is safe.
+      // This covers the window where the debounced save in NowPlayingContext
+      // hasn't fired yet (up to ~7 s while playing).
+      if (audioLoadedRef.current) {
+        TrackPlayer.getProgress()
+          .then((p) => {
+            if (p.position <= 0) return;
+            const chs = audioChaptersRef.current;
+            const chapter = chs.length > 0
+              ? chs.reduce((best, ch) => (ch.startSeconds <= p.position ? ch : best), chs[0])
+              : null;
+            return AsyncStorage.setItem(
+              `${POSITIONS_CACHE_KEY}:${params.bookId}:audio`,
+              JSON.stringify({
+                bookId: params.bookId,
+                timestampSeconds: p.position,
+                chapterIndex: chapter?.index ?? 0,
+                updatedAt: Date.now(),
+              }),
+            );
+          })
+          .catch(() => {});
+      }
     });
     return unsub;
   }, [navigation, params.bookId]);
