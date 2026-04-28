@@ -18,13 +18,16 @@ import { useNowPlaying } from '@/context/NowPlayingContext';
 import { localListBooks } from '@/services/book/localBookStore';
 import { getCachedPath } from '@/services/storage/localStorageService';
 import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
+import { seekToTimestamp } from '@/services/audio/trackPlayerService';
 import {
   loadCachedAssemblyAiWords,
 } from '@/services/sync/assemblyAiAdapter';
 import {
   findAudioWordMatch,
   tokenizeSnippet,
+  readerToAudio,
 } from '@/services/sync/handoff';
+import { getOrBuildLayer0 } from '@/services/sync/alignmentStore';
 import TrackPlayer from 'react-native-track-player';
 import { POSITIONS_CACHE_KEY } from '@/constants/config';
 import { logger } from '@/utils/logger';
@@ -139,44 +142,82 @@ export default function BookSessionScreen() {
     if (next === mode || switching) return;
 
     if (next === 'listen') {
-      if (!audioLoadedForThisBook && user && hasAudio) {
-        setSwitching(true);
-        try {
-          const livePos = await readerRef.current?.getCurrentPosition();
-          const epubPos = livePos && (livePos.percentComplete > 0 || livePos.cfi)
-            ? livePos
-            : undefined;
+      if (!user || !hasAudio) {
+        setMode(next);
+        animateTo(next);
+        return;
+      }
+      setSwitching(true);
+      try {
+        const livePos = await readerRef.current?.getCurrentPosition();
+        const epubPos = livePos && (livePos.percentComplete > 0 || livePos.cfi)
+          ? livePos
+          : undefined;
+
+        const wordMatch = async (
+          audioPath: string | null | undefined,
+          hintSeconds: number,
+        ): Promise<number | null> => {
+          if (!audioPath) return null;
+          try {
+            const cachedWords = await loadCachedAssemblyAiWords(audioPath);
+            const snippetWords = await readerRef.current?.getVisibleSnippet(8, 1500);
+            if (!cachedWords || cachedWords.length === 0) return null;
+            if (!snippetWords || snippetWords.length < 3) return null;
+            const tokens = tokenizeSnippet(snippetWords.join(' '));
+            return findAudioWordMatch(tokens, cachedWords, hintSeconds);
+          } catch (err) {
+            logger.warn('BookSession: word-match failed', err);
+            return null;
+          }
+        };
+
+        if (audioLoadedForThisBook && audioChapters.length > 0 && epubPos) {
+          // Audio already loaded — just seek to the reader's current position.
+          const alignment = await getOrBuildLayer0(
+            params.bookId,
+            audioChapters,
+            audioChapters.length,
+          );
+          const target = readerToAudio(
+            {
+              chapterIndex: epubPos.chapterIndex,
+              cfi: epubPos.cfi,
+              charOffset: epubPos.charOffset ?? 0,
+              chapterFraction: -1,
+              percentComplete: epubPos.percentComplete,
+            },
+            alignment,
+          );
+          const audioPath = nowPlayingBook?.localAudioUri ?? null;
+          const matched = await wordMatch(audioPath, target.timestampSeconds);
+          const seekTs = Math.max(0, matched ?? target.timestampSeconds);
+          logger.info('BookSession: seeking loaded audio to reader position', {
+            l0: target.timestampSeconds,
+            matched,
+            seekTs,
+          });
+          await seekToTimestamp(seekTs);
+        } else if (!audioLoadedForThisBook) {
+          // Audio not loaded — prepare from disk, then start at the reader's
+          // position (word-matched if AAI cache available, else L0).
           const prepared = await prepareBookForPlayback(user.uid, params.bookId, epubPos ?? undefined);
           if (prepared) {
             const audioPath = prepared.localBook.localAudioUri;
-            let startTs = prepared.startTimestamp;
-            if (audioPath) {
-              try {
-                const cachedWords = await loadCachedAssemblyAiWords(audioPath);
-                const snippetWords = await readerRef.current?.getVisibleSnippet(8, 1500);
-                if (cachedWords && cachedWords.length > 0 && snippetWords && snippetWords.length >= 3) {
-                  const tokens = tokenizeSnippet(snippetWords.join(' '));
-                  const matched = findAudioWordMatch(tokens, cachedWords, prepared.startTimestamp);
-                  if (matched !== null) {
-                    startTs = matched;
-                    logger.info('BookSession: word-match start', {
-                      hint: prepared.startTimestamp,
-                      matched,
-                      drift: Math.round(matched - prepared.startTimestamp),
-                    });
-                  }
-                }
-              } catch (err) {
-                logger.warn('BookSession: word-match failed, falling back to L0', err);
-              }
-            }
+            const matched = await wordMatch(audioPath, prepared.startTimestamp);
+            const startTs = matched ?? prepared.startTimestamp;
+            logger.info('BookSession: starting audio at reader position', {
+              hint: prepared.startTimestamp,
+              matched,
+              startTs,
+            });
             await startPlayback(prepared.localBook, prepared.chapters, startTs);
           }
-        } catch (err) {
-          logger.warn('BookSession: failed to prepare audio on switch', err);
-        } finally {
-          setSwitching(false);
         }
+      } catch (err) {
+        logger.warn('BookSession: failed to align audio on switch', err);
+      } finally {
+        setSwitching(false);
       }
     } else if (next === 'read') {
       if (audioLoadedForThisBook && audioChapters.length > 0) {
@@ -197,7 +238,7 @@ export default function BookSessionScreen() {
 
     setMode(next);
     animateTo(next);
-  }, [mode, switching, audioLoadedForThisBook, audioChapters, hasAudio, user, params.bookId, startPlayback, animateTo]);
+  }, [mode, switching, audioLoadedForThisBook, audioChapters, hasAudio, user, params.bookId, nowPlayingBook, startPlayback, animateTo]);
 
   return (
     <View style={styles.container}>
