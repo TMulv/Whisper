@@ -181,10 +181,24 @@ export default function BookSessionScreen() {
       }
       setSwitching(true);
       try {
+        // Flush the last known reader position synchronously before any async
+        // work so the AsyncStorage fallback inside prepareBookForPlayback is
+        // fresh even if the 2 s debounce hasn't fired yet.
+        const snapPos = readerRef.current?.getLastKnownPosition();
+        if (snapPos?.cfi) {
+          AsyncStorage.setItem(
+            `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
+            JSON.stringify({ ...snapPos, savedAt: Date.now() }),
+          ).catch(() => {});
+        }
+
         const livePos = await readerRef.current?.getCurrentPosition();
-        const epubPos = livePos && (livePos.percentComplete > 0 || livePos.cfi)
-          ? livePos
-          : undefined;
+        // Fall back to the synchronous ref when the async bridge returns empty
+        // (common before epub.js locations.generate() finishes).
+        const epubPos =
+          (livePos && (livePos.percentComplete > 0 || livePos.cfi))
+            ? livePos
+            : (readerRef.current?.getLastKnownPosition() ?? undefined);
 
         const wordMatch = async (
           audioPath: string | null | undefined,
@@ -255,6 +269,9 @@ export default function BookSessionScreen() {
       if (audioLoadedForThisBook && audioChapters.length > 0) {
         try {
           const audioPos = await TrackPlayer.getProgress().then((p) => p.position).catch(() => 0);
+          // Only sync reader if audio has actually played. If the user switched
+          // to audio but didn't listen (audioPos=0), the reader stays at its
+          // current page — correct because manual user nav cleared pendingCfi.
           if (audioPos > 0) {
             const audioChIdx = audioChapters.reduce(
               (best, ch) => (ch.startSeconds <= audioPos ? ch : best),

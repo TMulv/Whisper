@@ -371,9 +371,15 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
     })();
   }, [ready, user, bookId, resumeFromAudio]);
 
+  const pendingCfiRef = useRef<string | null>(null);
+  useEffect(() => { pendingCfiRef.current = pendingCfi; }, [pendingCfi]);
+
   useEffect(() => {
     const handleAppState = (nextState: AppStateStatus) => {
       if (nextState !== 'background' && nextState !== 'inactive') return;
+      // Skip if a saved-CFI restore is still pending — the WebView's currentLocation
+      // is transient pre-restore state, not the user's position.
+      if (pendingCfiRef.current) return;
       (async () => {
         try {
           const pos = await webViewRef.current?.getCurrentPosition();
@@ -389,6 +395,19 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const handlePositionChange = useCallback(
     (position: EpubPosition, programmatic: boolean) => {
+      // While a saved-CFI restore is pending, the WebView is showing chapter-0
+      // (initial render) or whatever currentLocation reports at LOCATIONS_READY —
+      // neither is the user's actual position. Skip ALL side effects (livePositionRef,
+      // chapter UI, persist, audio sync). Otherwise beforeRemove / AppState read
+      // livePositionRef and clobber the saved CFI in AsyncStorage.
+      if (pendingCfi) {
+        if (programmatic) return; // Initial render / LOCATIONS_READY synthetic — ignore.
+        // User navigated manually during the pre-restore window. Accept this as
+        // the real position and discard the pending restore so locationsReady
+        // doesn't snap them back to the old saved CFI.
+        setPendingCfi(null);
+      }
+
       livePositionRef.current = position;
       setCurrentChapterIndex(position.chapterIndex);
 
@@ -438,7 +457,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         }
       });
     },
-    [user, deviceId, bookId, onPositionChange, hasAudio, audioChapters, chapters.length],
+    [user, deviceId, bookId, onPositionChange, hasAudio, audioChapters, chapters.length, pendingCfi],
   );
 
   const handleFontSizeChange = useCallback((px: number) => {
