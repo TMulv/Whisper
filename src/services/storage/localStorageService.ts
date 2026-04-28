@@ -69,12 +69,29 @@ export async function cacheFile(
     sourceFile.copy(destFile);
   }
 
+  // Fail loud if the copy silently produced no file. iOS share-sheet Inbox
+  // paths have tripped this before — a successful-looking copy() call with
+  // no resulting file, which then surfaces much later as "missing EPUB" in
+  // the reader. Catching it here pins the blame on the actual failure site.
+  const copiedSize = destFile.exists ? destFile.size ?? 0 : -1;
+  if (copiedSize <= 0) {
+    logger.error('cacheFile: copy produced no file', {
+      sourceUri,
+      destUri: destFile.uri,
+      destExists: destFile.exists,
+      copiedSize,
+    });
+    throw new Error(
+      `File copy failed: ${destFile.uri} is empty or missing after copy from ${sourceUri}`,
+    );
+  }
+
   const meta = await getCacheMeta();
   meta[destFile.uri] = {
     bookId,
     type,
     lastAccessedAt: Date.now(),
-    sizeBytes: destFile.size ?? 0,
+    sizeBytes: copiedSize,
   };
   await setCacheMeta(meta);
 
@@ -173,4 +190,54 @@ export async function deleteCachedFile(uri: string): Promise<void> {
     delete meta[uri];
     await setCacheMeta(meta);
   }
+}
+
+/**
+ * Deletes every cached file associated with a given bookId (as recorded in
+ * cache meta). Used to tidy up after an abandoned import session so files
+ * picked but never saved to a Book don't linger on disk.
+ */
+export async function deleteCacheFilesForBookId(bookId: string): Promise<void> {
+  const meta = await getCacheMeta();
+  const uris = Object.entries(meta)
+    .filter(([, info]) => info.bookId === bookId)
+    .map(([uri]) => uri);
+  await Promise.all(uris.map((uri) => deleteCachedFile(uri)));
+}
+
+/**
+ * Deletes cached files that aren't referenced by any active book. Caller
+ * supplies the set of URIs still in use (epubPath, audioPath, syncMapPath
+ * from every stored book). Walks both the cache meta and the cache
+ * directory so entries missing from either source still get cleaned up.
+ * Returns the number of files deleted and the freed space in MB.
+ */
+export async function cleanupOrphanedFiles(
+  referencedUris: Iterable<string>,
+): Promise<{ deletedCount: number; freedMb: number }> {
+  const refSet = new Set(referencedUris);
+  const meta = await getCacheMeta();
+  const candidates = new Map<string, number>();
+  for (const [uri, info] of Object.entries(meta)) {
+    if (!refSet.has(uri)) candidates.set(uri, info.sizeBytes);
+  }
+  try {
+    const dir = getCacheDir();
+    if (dir.exists) {
+      for (const entry of dir.list()) {
+        if (!(entry instanceof File)) continue;
+        if (refSet.has(entry.uri) || candidates.has(entry.uri)) continue;
+        candidates.set(entry.uri, entry.size ?? 0);
+      }
+    }
+  } catch (err) {
+    logger.warn('cleanupOrphanedFiles: dir scan failed', err);
+  }
+
+  let freedBytes = 0;
+  for (const [uri, size] of candidates) {
+    await deleteCachedFile(uri);
+    freedBytes += size;
+  }
+  return { deletedCount: candidates.size, freedMb: bytesToMB(freedBytes) };
 }

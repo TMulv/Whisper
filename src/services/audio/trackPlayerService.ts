@@ -9,11 +9,27 @@ import { M4BChapter } from '@/types/sync';
 import { logger } from '@/utils/logger';
 import { getBookDisplay } from '@/utils/bookDisplay';
 
+// Module-level flag so we don't re-call TrackPlayer.setupPlayer() — it
+// throws "already initialized" on the second call. Multiple call sites
+// invoke this (NowPlayingContext on first play, audioProbe at import +
+// self-heal) so it must be idempotent.
+let _setupDone = false;
+
 export async function setupPlayer(): Promise<boolean> {
+  if (_setupDone) return true;
   try {
-    await TrackPlayer.setupPlayer({
-      maxCacheSize: 1024 * 5, // 5 MB
-    });
+    try {
+      await TrackPlayer.setupPlayer({
+        maxCacheSize: 1024 * 5, // 5 MB
+      });
+    } catch (err) {
+      // "The player has already been initialized via setupPlayer." is
+      // benign — another caller beat us to it. Continue with options.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.toLowerCase().includes('already been initialized')) {
+        throw err;
+      }
+    }
 
     await TrackPlayer.updateOptions({
       capabilities: [
@@ -37,6 +53,7 @@ export async function setupPlayer(): Promise<boolean> {
     });
 
     await TrackPlayer.setRepeatMode(RepeatMode.Off);
+    _setupDone = true;
     return true;
   } catch (err) {
     logger.error('setupPlayer failed', err);

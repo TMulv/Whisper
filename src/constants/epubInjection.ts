@@ -26,5 +26,8 @@ export const JS_SET_FONT_FAMILY = (family: string) =>
 export const JS_SET_MARGIN = (margin: string) =>
   `window.whisper.setMargin(${JSON.stringify(margin)}); true;`;
 
+export const JS_SET_LINE_HEIGHT = (value: number) =>
+  `window.whisper.setLineHeight(${value}); true;`;
+
 export const JS_GENERATE_LOCATIONS =
   `window.whisper.generateLocations(); true;`;

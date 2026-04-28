@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from '@/hooks/useTheme';
 import { ThemeName } from '@/constants/theme';
@@ -28,7 +29,11 @@ import {
   clearCredentials as clearNextcloudCredentials,
   testConnection as testNextcloudConnection,
 } from '@/services/storage/nextcloudService';
-import { getStorageStats } from '@/services/storage/localStorageService';
+import {
+  getStorageStats,
+  cleanupOrphanedFiles,
+} from '@/services/storage/localStorageService';
+import { localListBooks } from '@/services/book/localBookStore';
 import * as WebBrowser from 'expo-web-browser';
 import {
   getApiKeyFor,
@@ -48,8 +53,6 @@ import {
   setOfflineOnly as setDictOfflineOnly,
   getCachedCount as getDictCachedCount,
   clearCache as clearDictCache,
-  preloadCommonWords,
-  PreloadProgress,
 } from '@/services/dictionary/dictionaryService';
 
 const ICLOUD_ENABLED_KEY = '@whisper/icloud_enabled';
@@ -61,10 +64,12 @@ function maskKey(key: string): string {
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const { user, signOut } = useAuth();
   const { themeName, setTheme } = useTheme();
 
   const [cacheStats, setCacheStats] = useState<{ totalMb: number; fileCount: number } | null>(null);
+  const [cleanupRunning, setCleanupRunning] = useState(false);
 
   // Google Drive
   const [gdriveConnected, setGdriveConnected] = useState(false);
@@ -95,8 +100,6 @@ export default function SettingsScreen() {
   // Dictionary (offline)
   const [dictOfflineOnly, setDictOfflineOnlyState] = useState(false);
   const [dictCachedCount, setDictCachedCount] = useState(0);
-  const [dictPreloadProgress, setDictPreloadProgress] = useState<PreloadProgress | null>(null);
-  const dictCancelRef = React.useRef<{ cancelled: boolean }>({ cancelled: false });
 
   useEffect(() => {
     isGDriveAuthenticated().then(setGdriveConnected);
@@ -258,24 +261,6 @@ export default function SettingsScreen() {
     await setDictOfflineOnly(value);
   };
 
-  const handleDictPreload = async () => {
-    if (dictPreloadProgress) {
-      dictCancelRef.current.cancelled = true;
-      return;
-    }
-    dictCancelRef.current = { cancelled: false };
-    setDictPreloadProgress({ completed: 0, total: 0, cached: 0, failed: 0 });
-    try {
-      await preloadCommonWords((p) => setDictPreloadProgress(p), dictCancelRef.current);
-      const count = await getDictCachedCount();
-      setDictCachedCount(count);
-    } catch (err) {
-      Alert.alert('Download failed', err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setDictPreloadProgress(null);
-    }
-  };
-
   const handleDictClear = () => {
     Alert.alert(
       'Clear dictionary cache',
@@ -292,6 +277,37 @@ export default function SettingsScreen() {
         },
       ],
     );
+  };
+
+  // ── Storage ──────────────────────────────────────────────────────────────────
+
+  const handleCleanupOrphans = async () => {
+    if (!user || cleanupRunning) return;
+    setCleanupRunning(true);
+    try {
+      const books = await localListBooks(user.uid);
+      const referenced: string[] = [];
+      for (const b of books) {
+        if (b.epubPath) referenced.push(b.epubPath);
+        if (b.audioPath) referenced.push(b.audioPath);
+        if (b.syncMapPath) referenced.push(b.syncMapPath);
+      }
+      const { deletedCount, freedMb } = await cleanupOrphanedFiles(referenced);
+      const stats = await getStorageStats();
+      setCacheStats(stats);
+      if (deletedCount === 0) {
+        Alert.alert('No orphans', 'Every cached file is paired with a book.');
+      } else {
+        Alert.alert(
+          'Cleanup complete',
+          `Removed ${deletedCount} unpaired file${deletedCount === 1 ? '' : 's'} (${freedMb.toFixed(1)} MB).`,
+        );
+      }
+    } catch (err) {
+      Alert.alert('Cleanup failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setCleanupRunning(false);
+    }
   };
 
   // ── Sign out ─────────────────────────────────────────────────────────────────
@@ -312,8 +328,12 @@ export default function SettingsScreen() {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
+      contentContainerStyle={[
+        styles.content,
+        { paddingBottom: tabBarHeight + insets.bottom + 32 },
+      ]}
       keyboardShouldPersistTaps="handled"
+      contentInsetAdjustmentBehavior="automatic"
     >
       {/* Account */}
       <SettingsSection title="Account">
@@ -359,28 +379,6 @@ export default function SettingsScreen() {
           />
         </View>
         <SettingsRow label="Cached words" value={String(dictCachedCount)} />
-        <View style={styles.serviceRow}>
-          <View style={{ flex: 1, paddingRight: 12 }}>
-            <Text style={styles.serviceLabel}>Download common words</Text>
-            <Text style={styles.serviceStatus}>
-              {dictPreloadProgress
-                ? `Downloading ${dictPreloadProgress.completed}/${dictPreloadProgress.total} · ${dictPreloadProgress.cached} saved`
-                : 'Prefetch definitions for ~500 common words for offline use'}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[
-              styles.serviceBtn,
-              dictPreloadProgress && styles.serviceBtnDisconnect,
-            ]}
-            onPress={handleDictPreload}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.serviceBtnText}>
-              {dictPreloadProgress ? 'Cancel' : 'Download'}
-            </Text>
-          </TouchableOpacity>
-        </View>
         {dictCachedCount > 0 && (
           <TouchableOpacity style={styles.destructiveRow} onPress={handleDictClear}>
             <Text style={styles.destructiveText}>Clear Cached Words</Text>
@@ -523,6 +521,18 @@ export default function SettingsScreen() {
           label="Cache size"
           value={cacheStats ? `${cacheStats.totalMb.toFixed(1)} MB (${cacheStats.fileCount} files)` : '…'}
         />
+        <TouchableOpacity
+          style={styles.destructiveRow}
+          onPress={handleCleanupOrphans}
+          disabled={cleanupRunning}
+          activeOpacity={0.7}
+        >
+          {cleanupRunning ? (
+            <ActivityIndicator size="small" color="#C62828" />
+          ) : (
+            <Text style={styles.destructiveText}>Clean Up Unpaired Files</Text>
+          )}
+        </TouchableOpacity>
       </SettingsSection>
 
       {/* Google Drive */}

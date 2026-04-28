@@ -1,13 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getCachedPath, readTextFromCache } from '@/services/storage/localStorageService';
 import { parseChaptersJson, createFallbackChapter } from '@/services/audio/m4bParser';
-import { localListBooks } from '@/services/book/localBookStore';
+import { localListBooks, localWriteBook } from '@/services/book/localBookStore';
+import { probeAudioDuration } from '@/services/audio/audioProbe';
 import { POSITIONS_CACHE_KEY } from '@/constants/config';
 import { LocalBook } from '@/types/book';
 import { M4BChapter } from '@/types/sync';
 import { getOrBuildLayer0 } from '@/services/sync/alignmentStore';
-import { readerToAudio } from '@/services/sync/handoff';
-import { EpubPosition } from '@/types/position';
+import { readerToAudio, audioToReader } from '@/services/sync/handoff';
+import { EpubPosition, AudioPosition } from '@/types/position';
+import { logger } from '@/utils/logger';
 
 export interface PreparedBook {
   localBook: LocalBook;
@@ -21,6 +23,7 @@ export interface PreparedBook {
 export async function prepareBookForPlayback(
   userId: string,
   bookId: string,
+  livePosition?: EpubPosition,
 ): Promise<PreparedBook | null> {
   const books = await localListBooks(userId);
   const book = books.find((b) => b.id === bookId);
@@ -30,7 +33,34 @@ export async function prepareBookForPlayback(
   const localAudioUri = await getCachedPath(bookId, 'audio', ext);
   if (!localAudioUri) return null;
 
-  let chapters = createFallbackChapter(book.totalDurationSeconds);
+  // Self-heal for books imported before audioProbe wiring landed: if the
+  // persisted duration is 0, alignmentBuilder will produce a [0, 0] audio
+  // span and every reader→audio handoff resolves to 0:00. Probe and
+  // backfill so the next play (and the alignment we're about to build
+  // below) uses a real span.
+  let totalDurationSeconds = book.totalDurationSeconds;
+  if (totalDurationSeconds <= 0) {
+    totalDurationSeconds = await probeAudioDuration(localAudioUri);
+    if (totalDurationSeconds > 0) {
+      try {
+        await localWriteBook(userId, bookId, {
+          ...book,
+          totalDurationSeconds,
+          updatedAt: Date.now(),
+        });
+        logger.info('prepareBookForPlayback: backfilled totalDurationSeconds', {
+          bookId,
+          totalDurationSeconds,
+        });
+      } catch (err) {
+        logger.warn('prepareBookForPlayback: failed to persist backfilled duration', err);
+      }
+    } else {
+      logger.warn('prepareBookForPlayback: probe returned 0 — sync will be inaccurate', { bookId });
+    }
+  }
+
+  let chapters = createFallbackChapter(totalDurationSeconds);
   const json = await readTextFromCache(bookId, 'chapters', 'json');
   if (json) {
     const parsed = parseChaptersJson(json);
@@ -48,7 +78,7 @@ export async function prepareBookForPlayback(
     storageProvider: 'local',
     syncMode: book.syncMode,
     totalChapters: book.totalChapters,
-    totalDurationSeconds: book.totalDurationSeconds,
+    totalDurationSeconds,
     addedAt: book.addedAt,
     updatedAt: book.updatedAt,
     localEpubUri: null,
@@ -64,23 +94,104 @@ export async function prepareBookForPlayback(
   let startTimestamp = 0;
   try {
     const epubKey = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
-    const raw = await AsyncStorage.getItem(epubKey);
-    if (raw) {
-      const epubPos = JSON.parse(raw) as EpubPosition;
-      if (
-        typeof epubPos?.percentComplete === 'number' &&
-        epubPos.percentComplete > 0
-      ) {
-        const alignment = await getOrBuildLayer0(
-          bookId,
-          chapters,
-          book.totalChapters || chapters.length,
-        );
-        startTimestamp = readerToAudio(epubPos, alignment).timestampSeconds;
-      }
+    const audioKey = `${POSITIONS_CACHE_KEY}:${bookId}:audio`;
+
+    // Load both saved positions
+    let savedEpubPos: (EpubPosition & { savedAt?: number }) | null = null;
+    let savedAudioPos: (AudioPosition & { updatedAt: number }) | null = null;
+    try {
+      const epubRaw = await AsyncStorage.getItem(epubKey);
+      if (epubRaw) savedEpubPos = JSON.parse(epubRaw) as EpubPosition & { savedAt?: number };
+    } catch { /* ignore */ }
+    try {
+      const audioRaw = await AsyncStorage.getItem(audioKey);
+      if (audioRaw) savedAudioPos = JSON.parse(audioRaw) as AudioPosition & { updatedAt: number };
+    } catch { /* ignore */ }
+
+    // Prefer the caller's live position (chapter and CFI are always current).
+    let epubPos: EpubPosition | null = livePosition ?? savedEpubPos;
+
+    // If percentComplete is still 0 after locationsReady, LOCATIONS_READY fired
+    // without a valid CFI (currentLocation() returned null during location
+    // generation). Fall back to the last persisted position for the same chapter —
+    // it's more reliable than a chapter-local chapterFraction which can't be mapped
+    // to book-level time without knowing the total epub chapter count.
+    if (
+      epubPos &&
+      epubPos.percentComplete === 0 &&
+      savedEpubPos &&
+      savedEpubPos.percentComplete > 0 &&
+      savedEpubPos.chapterIndex === epubPos.chapterIndex
+    ) {
+      epubPos = { ...epubPos, percentComplete: savedEpubPos.percentComplete };
     }
-  } catch {
-    /* ignore */
+
+    // If we have a saved audio position and no reliable epub position at all,
+    // convert the audio position back to an epub position. Only do this when
+    // there is no live position (i.e. we were NOT called from the reader) and
+    // no saved epub position — the reader's live position is always more accurate
+    // than reversing an audio timestamp through the alignment.
+    if (
+      !livePosition &&
+      !savedEpubPos &&
+      savedAudioPos &&
+      savedAudioPos.timestampSeconds > 0
+    ) {
+      // Build alignment once and use it for both conversions
+      const alignment = await getOrBuildLayer0(
+        bookId,
+        chapters,
+        book.totalChapters || chapters.length,
+      );
+      epubPos = audioToReader(
+        {
+          chapterIndex: savedAudioPos.chapterIndex,
+          timestampSeconds: savedAudioPos.timestampSeconds,
+          percentComplete: savedAudioPos.percentComplete,
+        },
+        alignment,
+      );
+      startTimestamp = readerToAudio(epubPos, alignment).timestampSeconds;
+      logger.info('prepareBookForPlayback: used saved audio position', {
+        audioTimestamp: savedAudioPos.timestampSeconds,
+        startTimestamp,
+      });
+    } else if (epubPos && (epubPos.cfi || epubPos.chapterIndex > 0 || epubPos.percentComplete > 0 || (epubPos.chapterFraction ?? -1) >= 0)) {
+      // Use epub position (from live reader or saved)
+      const alignment = await getOrBuildLayer0(
+        bookId,
+        chapters,
+        book.totalChapters || chapters.length,
+      );
+      const result = readerToAudio(epubPos, alignment);
+      startTimestamp = result.timestampSeconds;
+      logger.info('prepareBookForPlayback: used epub position', {
+        epubPercent: epubPos.percentComplete,
+        epubChapterIndex: epubPos.chapterIndex,
+        resolvedAudioChapter: result.chapterIndex,
+        alignmentChapterCount: alignment.chapters.length,
+        startTimestamp,
+      });
+    } else {
+      logger.warn('prepareBookForPlayback: no valid position found, starting from beginning', {
+        epubPos,
+        audioPos: savedAudioPos,
+      });
+    }
+
+    logger.info('prepareBookForPlayback: resolving start position', {
+      livePercent: livePosition?.percentComplete,
+      liveChapterFraction: livePosition?.chapterFraction,
+      savedEpubPercent: savedEpubPos?.percentComplete,
+      savedAudioSeconds: savedAudioPos?.timestampSeconds,
+      resolvedPercent: epubPos?.percentComplete,
+      resolvedChapterFraction: epubPos?.chapterFraction,
+      chapterIndex: epubPos?.chapterIndex,
+      hasCfi: !!epubPos?.cfi,
+      startTimestamp,
+    });
+  } catch (err) {
+    logger.warn('prepareBookForPlayback: position resolve failed, starting from beginning', err);
   }
 
   return { localBook, chapters, startTimestamp };

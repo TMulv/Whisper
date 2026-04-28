@@ -18,9 +18,11 @@ import {
   JS_SET_THEME,
   JS_SET_FONT_FAMILY,
   JS_SET_MARGIN,
+  JS_SET_LINE_HEIGHT,
 } from '@/constants/epubInjection';
 import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
+import { Highlight } from '@/types/highlight';
 import { logger } from '@/utils/logger';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -40,20 +42,27 @@ export interface EpubWebViewRef {
   goTo: (cfi: string) => void;
   goToChapter: (index: number) => void;
   setFontSize: (px: number) => void;
+  setLineHeight: (value: number) => void;
   setTheme: (theme: EpubTheme) => void;
   setFontFamily: (family: string) => void;
   setMargin: (margin: string) => void;
   getCurrentPosition: (timeoutMs?: number) => Promise<EpubPosition>;
   getChapterText: (index: number, timeoutMs?: number) => Promise<string>;
+  getVisibleSnippet: (wordCount?: number, timeoutMs?: number) => Promise<string[]>;
+  addHighlight: (id: string, cfiRange: string, color: string) => void;
+  removeHighlight: (id: string) => void;
+  loadHighlights: (highlights: Pick<Highlight, 'id' | 'cfiRange' | 'color'>[]) => void;
 }
 
 interface Props {
   onReady?: () => void;
+  onBookReady?: () => void;
   onPositionChange?: (position: EpubPosition, programmatic: boolean) => void;
-  onLocationsReady?: () => void;
+  onLocationsReady?: (totalLocations: number) => void;
   onChapterList?: (chapters: EpubChapter[]) => void;
   onWordLookup?: (word: string) => void;
   onParagraphTap?: (percentComplete: number, chapterIndex: number) => void;
+  onTextSelected?: (cfiRange: string, text: string, chapterIndex: number) => void;
   onError?: (message: string) => void;
 }
 
@@ -68,13 +77,15 @@ type BridgeMessage =
   | { type: 'CHAPTER_LIST'; chapters: EpubChapter[] }
   | { type: 'WORD_LOOKUP'; word: string }
   | { type: 'PARAGRAPH_TAP'; percentComplete: number; chapterIndex: number }
+  | { type: 'TEXT_SELECTED'; cfiRange: string; text: string; chapterIndex: number }
   | { type: 'CHAPTER_TEXT'; requestId: string; ok: boolean; text?: string; title?: string; chapterIndex?: number; error?: string }
+  | { type: 'SNIPPET_RESULT'; requestId: string; ok: boolean; words?: string[]; error?: string }
   | { type: 'ERROR'; message: string };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
-  { onReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onError },
+  { onReady, onBookReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onTextSelected, onError },
   ref,
 ) {
   const webViewRef = useRef<WebView>(null);
@@ -85,6 +96,9 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
   >(new Map());
   const pendingPositionRequestsRef = useRef<
     Map<string, { resolve: (pos: EpubPosition) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>
+  >(new Map());
+  const pendingSnippetRequestsRef = useRef<
+    Map<string, { resolve: (words: string[]) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>
   >(new Map());
 
   // Resolve the bundled html asset URI once on mount. Loading via file URI
@@ -166,6 +180,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     goTo: (cfi: string) => inject(JS_GO_TO_CFI(cfi)),
     goToChapter: (index: number) => inject(JS_GO_TO_CHAPTER(index)),
     setFontSize: (px: number) => inject(JS_SET_FONT_SIZE(px)),
+    setLineHeight: (value: number) => inject(JS_SET_LINE_HEIGHT(value)),
     setTheme: (theme: EpubTheme) => inject(JS_SET_THEME(theme)),
     setFontFamily: (family: string) => inject(JS_SET_FONT_FAMILY(family)),
     setMargin: (margin: string) => inject(JS_SET_MARGIN(margin)),
@@ -193,6 +208,28 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
         );
       });
     },
+    getVisibleSnippet: (wordCount = 8, timeoutMs = 3000) => {
+      const requestId = `snip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      return new Promise<string[]>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingSnippetRequestsRef.current.delete(requestId);
+          reject(new Error('Timed out extracting visible snippet'));
+        }, timeoutMs);
+        pendingSnippetRequestsRef.current.set(requestId, { resolve, reject, timer });
+        inject(
+          `window.whisper.getVisibleSnippet(${JSON.stringify(requestId)}, ${wordCount}); true;`,
+        );
+      });
+    },
+    addHighlight: (id: string, cfiRange: string, color: string) => {
+      inject(`window.whisper.addHighlight(${JSON.stringify(id)},${JSON.stringify(cfiRange)},${JSON.stringify(color)}); true;`);
+    },
+    removeHighlight: (id: string) => {
+      inject(`window.whisper.removeHighlight(${JSON.stringify(id)}); true;`);
+    },
+    loadHighlights: (highlights: Pick<Highlight, 'id' | 'cfiRange' | 'color'>[]) => {
+      inject(`window.whisper.loadHighlights(${JSON.stringify(highlights)}); true;`);
+    },
   }));
 
   // ── Message handler ───────────────────────────────────────────────────────
@@ -216,6 +253,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
 
         case 'READY':
           logger.info('EpubWebView: READY (book rendered)');
+          onBookReady?.();
           break;
 
         case 'POSITION_CHANGE':
@@ -239,6 +277,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
 
         case 'CHAPTER_LIST':
+          logger.info('EpubWebView: CHAPTER_LIST', { count: msg.chapters?.length ?? 0 });
           onChapterList?.(msg.chapters);
           break;
 
@@ -248,6 +287,10 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
 
         case 'PARAGRAPH_TAP':
           onParagraphTap?.(msg.percentComplete, msg.chapterIndex);
+          break;
+
+        case 'TEXT_SELECTED':
+          onTextSelected?.(msg.cfiRange, msg.text, msg.chapterIndex);
           break;
 
         case 'POSITION_RESULT': {
@@ -282,6 +325,19 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
         }
 
+        case 'SNIPPET_RESULT': {
+          const pending = pendingSnippetRequestsRef.current.get(msg.requestId);
+          if (!pending) break;
+          pendingSnippetRequestsRef.current.delete(msg.requestId);
+          clearTimeout(pending.timer);
+          if (msg.ok && Array.isArray(msg.words)) {
+            pending.resolve(msg.words);
+          } else {
+            pending.reject(new Error(msg.error ?? 'Failed to get visible snippet'));
+          }
+          break;
+        }
+
         case 'LOCATIONS_READY':
           logger.info('EpubWebView: LOCATIONS_READY', {
             count: msg.count,
@@ -307,7 +363,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           } else {
             logger.warn('EpubWebView: LOCATIONS_READY had empty CFI — livePosition percentComplete will NOT be updated');
           }
-          onLocationsReady?.();
+          onLocationsReady?.(msg.count);
           break;
 
         case 'ERROR':
@@ -316,7 +372,7 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           break;
       }
     },
-    [onReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onError, flushPending],
+    [onReady, onBookReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onTextSelected, onError, flushPending],
   );
 
   if (!bridgeUri) return null;

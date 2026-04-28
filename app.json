@@ -18,7 +18,10 @@
       "bundleIdentifier": "com.whisper.app",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
-        "UIBackgroundModes": ["audio", "fetch"],
+        "UIBackgroundModes": [
+          "audio",
+          "fetch"
+        ],
         "NSDocumentsFolderUsageDescription": "Whisper needs access to your documents to open epub and audio files."
       }
     },

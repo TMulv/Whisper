@@ -36,6 +36,11 @@ export function buildLayer0(input: BuildLayer0Input): BookAlignment {
         : Math.round((i / Math.max(M - 1, 1)) * (N - 1));
     const clampedEpubIdx = Math.max(0, Math.min(epubIdx, N - 1));
 
+    // Epub percent span: divide the book proportionally among audio chapters
+    // so there are no gaps and no overlaps regardless of M:N ratio.
+    // epubChapterIndex is kept for navigation (which chapter to display), but
+    // percent bounds drive L0 position math and must cover the full [0,1] range.
+    // e.g. M=1 → [0, 1], M=3 → [0,.33], [.33,.67], [.67,1]
     chapters.push({
       audioChapterIndex: i,
       audioStartSeconds: audio.startSeconds,
@@ -43,8 +48,8 @@ export function buildLayer0(input: BuildLayer0Input): BookAlignment {
       epubChapterIndex: clampedEpubIdx,
       epubCfiBase:
         epubChapterCfis?.[clampedEpubIdx] ?? buildChapterBaseCfi(clampedEpubIdx),
-      epubPercentStart: clampedEpubIdx / N,
-      epubPercentEnd: (clampedEpubIdx + 1) / N,
+      epubPercentStart: i / M,
+      epubPercentEnd: (i + 1) / M,
     });
   }
 

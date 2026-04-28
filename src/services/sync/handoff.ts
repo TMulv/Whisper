@@ -9,6 +9,7 @@ import {
   audioSecondsToParagraphCfi,
   paragraphPositionToAudioSeconds,
 } from './paragraphWeights';
+import type { AssemblyWord } from './assemblyAiAdapter';
 
 // Single source of truth for bi-directional audiobook ↔ ebook handoff.
 // Replaces the old percent-of-book math that lived in prepareBookForPlayback,
@@ -139,6 +140,16 @@ export function readerToAudio(
        findChapterByEpubPercent(alignment, epub.percentComplete));
 
   if (!ch) {
+    console.error('[readerToAudio] no chapter found', {
+      epubPercent: epub.percentComplete,
+      epubChapterIndex: epub.chapterIndex,
+      alignmentSize: alignment.chapters.length,
+      chapters: alignment.chapters.slice(0, 3).map(c => ({
+        audioChapterIndex: c.audioChapterIndex,
+        epubPercentStart: c.epubPercentStart,
+        epubPercentEnd: c.epubPercentEnd,
+      })),
+    });
     return { chapterIndex: 0, timestampSeconds: 0, percentComplete: 0 };
   }
 
@@ -221,6 +232,17 @@ export function readerToAudio(
   const timestampSeconds =
     ch.audioStartSeconds +
     progress * (ch.audioEndSeconds - ch.audioStartSeconds);
+  if (timestampSeconds === 0 && epub.percentComplete > 0) {
+    console.warn('[readerToAudio] L0 tier returned 0 timestamp despite non-zero epub percent', {
+      epubPercent: epub.percentComplete,
+      chapterIndex: ch.audioChapterIndex,
+      epubPercentStart: ch.epubPercentStart,
+      epubPercentEnd: ch.epubPercentEnd,
+      progress,
+      audioStart: ch.audioStartSeconds,
+      audioEnd: ch.audioEndSeconds,
+    });
+  }
   return {
     chapterIndex: ch.audioChapterIndex,
     timestampSeconds,
@@ -330,4 +352,91 @@ export function audioToReader(
     chapterFraction: -1,
     percentComplete,
   };
+}
+
+// ── Word-match handoff ──────────────────────────────────────────────────────
+//
+// When AssemblyAI has produced a word-level transcript for the audio, we can
+// bypass L0/L0.5/L1 entirely: take the next 8 words the user is about to
+// read, find that sequence in the transcript, and seek to the matched word's
+// start time. This is sentence-accurate without requiring DTW pre-alignment.
+//
+// The match is windowed to ±5 minutes around a hint timestamp (typically the
+// L0 result) so we don't accidentally lock onto a duplicate phrase from a
+// different chapter. Score is exact-token matches; ties go to the run nearest
+// the hint.
+
+const WINDOW_SECONDS = 5 * 60;
+const MIN_SCORE = 5; // out of 8 — tolerates narrator skipping a stop-word or two
+
+/** Lowercase, strip non-alphanumeric, drop empty. Keeps numbers + apostrophes. */
+function normalizeToken(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9']/g, '');
+}
+
+export function tokenizeSnippet(text: string): string[] {
+  return text
+    .split(/\s+/)
+    .map(normalizeToken)
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * Given a snippet (the next words the user is about to read) and the audio's
+ * full word transcript, find the best matching run within ±WINDOW_SECONDS of
+ * `hintSeconds`. Returns the start time of the matched run in seconds, or
+ * null if no run scores above MIN_SCORE.
+ */
+export function findAudioWordMatch(
+  snippet: string[],
+  audioWords: AssemblyWord[],
+  hintSeconds: number,
+): number | null {
+  if (snippet.length < 3 || audioWords.length === 0) return null;
+
+  const target = snippet.slice(0, 8);
+  const tLen = target.length;
+  if (tLen < 3) return null;
+
+  const lo = (hintSeconds - WINDOW_SECONDS) * 1000;
+  const hi = (hintSeconds + WINDOW_SECONDS) * 1000;
+
+  // Pre-normalize transcript words once. Track original indices so we can
+  // recover the start time after scoring.
+  const normWords: string[] = [];
+  const wordIdx: number[] = [];
+  for (let i = 0; i < audioWords.length; i++) {
+    const w = audioWords[i];
+    if (w.end < lo || w.start > hi) continue;
+    const n = normalizeToken(w.text);
+    if (!n) continue;
+    normWords.push(n);
+    wordIdx.push(i);
+  }
+  if (normWords.length < tLen) return null;
+
+  let bestScore = 0;
+  let bestStart = -1;
+  let bestDistance = Infinity;
+
+  for (let i = 0; i + tLen <= normWords.length; i++) {
+    let score = 0;
+    for (let j = 0; j < tLen; j++) {
+      if (normWords[i + j] === target[j]) score++;
+    }
+    if (score < MIN_SCORE) continue;
+
+    const wStart = audioWords[wordIdx[i]].start; // ms
+    const distance = Math.abs(wStart / 1000 - hintSeconds);
+    if (
+      score > bestScore ||
+      (score === bestScore && distance < bestDistance)
+    ) {
+      bestScore = score;
+      bestStart = wStart / 1000;
+      bestDistance = distance;
+    }
+  }
+
+  return bestStart >= 0 ? bestStart : null;
 }

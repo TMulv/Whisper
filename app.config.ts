@@ -108,7 +108,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     dropboxAppKey: process.env.DROPBOX_APP_KEY ?? '',
     eas: {
-      projectId: process.env.EAS_PROJECT_ID ?? '',
+      projectId: process.env.EAS_PROJECT_ID ?? '1ea42195-05bb-4279-a7ce-697540ac3179',
     },
   },
 });

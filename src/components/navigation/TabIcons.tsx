@@ -29,66 +29,6 @@ export function LibraryIcon({ focused = false, size = 24 }: IconProps) {
   );
 }
 
-// ── Files: two overlapping cards with a folded corner on the top one ─────────
-
-export function FilesIcon({ focused = false, size = 24 }: IconProps) {
-  const c = focused ? ACTIVE : INACTIVE;
-  const border = focused ? 1.8 : 1.4;
-  const cardW = size * 0.68;
-  const cardH = size * 0.72;
-  return (
-    <View style={{ width: size, height: size }}>
-      <View
-        style={{
-          position: 'absolute',
-          top: 0,
-          right: 0,
-          width: cardW,
-          height: cardH,
-          borderWidth: border,
-          borderColor: c,
-          borderRadius: 2,
-          opacity: 0.55,
-        }}
-      />
-      <View
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          width: cardW,
-          height: cardH,
-          borderWidth: border,
-          borderColor: c,
-          borderRadius: 2,
-          backgroundColor: '#FFFFFF',
-        }}
-      >
-        <View
-          style={{
-            position: 'absolute',
-            top: 2,
-            right: 2,
-            width: cardW * 0.28,
-            height: border,
-            backgroundColor: c,
-          }}
-        />
-        <View
-          style={{
-            position: 'absolute',
-            top: cardH * 0.35,
-            right: 2,
-            width: cardW * 0.28,
-            height: border,
-            backgroundColor: c,
-          }}
-        />
-      </View>
-    </View>
-  );
-}
-
 // ── Pair: two interlocking rings — audio ↔ text bond (for gold FAB) ──────────
 
 export function PairRingsIcon({ color = '#09090F', size = 24 }: { color?: string; size?: number }) {

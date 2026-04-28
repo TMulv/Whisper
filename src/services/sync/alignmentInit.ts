@@ -5,7 +5,7 @@
 // installs a process-wide singleton.
 
 import { setWhisperAdapter } from './whisperAdapter';
-import { createWhisperRnAdapter } from './whisperRnAdapter';
+import { createAssemblyAiAdapter } from './assemblyAiAdapter';
 import { initAlignerQueue, getAlignerQueue } from './onDeviceAligner';
 import {
   createEpubTextProvider,
@@ -21,7 +21,7 @@ export function installAlignmentPipeline(): void {
   installed = true;
 
   try {
-    setWhisperAdapter(createWhisperRnAdapter());
+    setWhisperAdapter(createAssemblyAiAdapter());
 
     const epubTextProvider = createEpubTextProvider();
     const bookInfoProvider = createBookInfoProvider(

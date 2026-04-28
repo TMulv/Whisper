@@ -50,8 +50,18 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { LibraryStackParamList } from '@/navigation/types';
 import * as Crypto from 'expo-crypto';
-import { buildCachePath, cacheFile, ensureCacheDir } from '@/services/storage/localStorageService';
-import { takePendingImport } from '@/services/pendingImportStore';
+import {
+  buildCachePath,
+  cacheFile,
+  ensureCacheDir,
+  deleteCacheFilesForBookId,
+} from '@/services/storage/localStorageService';
+import { logger } from '@/utils/logger';
+import { probeAudioDuration } from '@/services/audio/audioProbe';
+import {
+  subscribeToPendingImport,
+  takePendingImport,
+} from '@/services/pendingImportStore';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
 import BookSyncIndicator from '@/components/library/BookSyncIndicator';
@@ -464,7 +474,27 @@ export default function LibraryScreen() {
     uri: string;
     name: string;
   } | null>(null);
+  /** Guards `handleIncomingFile` against double-processing the same file.
+   *  If the store ever delivers a URI we've handled in the last 10s, skip it. */
+  const processedIncomingRef = useRef<{ uri: string; ts: number } | null>(null);
+  /** Source of truth for the current "add book" session's bookId. Stays stable
+   *  across modal-open, multiple drops, and inside-modal file picks so every
+   *  cacheFile call within one session lands at `{sameId}_*.*`. Cleared on
+   *  confirm-success or modal dismiss. */
+  const sessionBookIdRef = useRef<string | null>(null);
   const insets = useSafeAreaInsets();
+
+  const startOrReuseSession = useCallback((): string => {
+    if (sessionBookIdRef.current) return sessionBookIdRef.current;
+    const id = Crypto.randomUUID();
+    sessionBookIdRef.current = id;
+    setPendingBookId(id);
+    return id;
+  }, []);
+
+  const endSession = useCallback((): void => {
+    sessionBookIdRef.current = null;
+  }, []);
 
   const handleOpenModal = useCallback(async () => {
     const [nc, gd, icloudPref] = await Promise.all([
@@ -475,9 +505,9 @@ export default function LibraryScreen() {
     setHasNextcloud(nc);
     setHasGDrive(gd);
     setHasICloud(isICloudAvailable() && icloudPref === 'true');
-    setPendingBookId(Crypto.randomUUID());
+    startOrReuseSession();
     setModalVisible(true);
-  }, []);
+  }, [startOrReuseSession]);
 
   /** Handle a file delivered via iOS "Open with" or the simulator drag-and-drop.
    *  Copies the file to the local cache, opens AddBookModal, and pre-populates
@@ -485,7 +515,16 @@ export default function LibraryScreen() {
   const handleIncomingFile = useCallback(
     async (incoming: { uri: string; name: string; kind: 'audio' | 'epub' }) => {
       if (!user) return;
-      const bookId = Crypto.randomUUID();
+      const now = Date.now();
+      const last = processedIncomingRef.current;
+      if (last && last.uri === incoming.uri && now - last.ts < 10_000) {
+        logger.info('[incoming] dedupe hit, skipping', { uri: incoming.uri });
+        return;
+      }
+      processedIncomingRef.current = { uri: incoming.uri, ts: now };
+
+      const bookId = startOrReuseSession();
+      logger.info('[incoming] begin', { bookId, incoming });
       const [nc, gd, icloudPref] = await Promise.all([
         isNextcloudAuthenticated(),
         isGDriveAuthenticated(),
@@ -494,19 +533,23 @@ export default function LibraryScreen() {
       setHasNextcloud(nc);
       setHasGDrive(gd);
       setHasICloud(isICloudAvailable() && icloudPref === 'true');
-      setPendingBookId(bookId);
       try {
-        const ext = incoming.name.split('.').pop() ?? (incoming.kind === 'audio' ? 'm4b' : 'epub');
+        // Normalise the extension to lowercase so it matches the canonical
+        // path the reader rebuilds via getCachedPath(bookId, 'epub', 'epub').
+        const rawExt = incoming.name.split('.').pop();
+        const ext = (rawExt || (incoming.kind === 'audio' ? 'm4b' : 'epub')).toLowerCase();
         const fileType = incoming.kind === 'audio' ? 'audio' : 'epub';
         const cachedUri = await cacheFile(incoming.uri, bookId, fileType, ext);
+        logger.info('[incoming] cached', { bookId, fileType, ext, cachedUri });
         setPreselectedIncoming({ kind: incoming.kind, uri: cachedUri, name: incoming.name });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        logger.error('[incoming] cacheFile failed', err);
         Alert.alert('Import Error', `Could not read the incoming file.\n\n${msg}`);
       }
       setModalVisible(true);
     },
-    [user],
+    [user, startOrReuseSession],
   );
 
   // ── openAdd route-param signal ─────────────────────────────────────────────
@@ -517,24 +560,25 @@ export default function LibraryScreen() {
     navigation.setParams({ openAdd: undefined });
   }, [openAddSignal, handleOpenModal, navigation]);
 
-  // ── incomingFile route-param signal ───────────────────────────────────────
-  // Delivered by App.tsx's Linking listener when iOS routes a file to Whisper.
-  const incomingFileParam = route.params?.incomingFile;
+  // ── pendingImportStore: single source of truth ────────────────────────────
+  // App.tsx's Linking listener funnels every incoming file into the store.
+  // We subscribe for live deliveries (warm-start while the screen is already
+  // mounted) and also drain any file queued before subscription (cold-start
+  // or post-login mount) from the store on each focus.
   useEffect(() => {
-    if (!incomingFileParam) return;
-    navigation.setParams({ incomingFile: undefined }); // consume immediately
-    handleIncomingFile(incomingFileParam);
-  }, [incomingFileParam, handleIncomingFile, navigation]);
-
-  // ── pendingImportStore check on focus ──────────────────────────────────────
-  // Handles the case where the file arrived before navigation was ready
-  // (cold start) or before LibraryScreen was mounted (e.g. after login).
-  useEffect(() => {
-    const unsub = navigation.addListener('focus', () => {
+    const unsubStore = subscribeToPendingImport((file) => {
+      // Clear the store-held copy so the focus-drain below doesn't re-fire it.
+      takePendingImport();
+      handleIncomingFile(file);
+    });
+    const unsubFocus = navigation.addListener('focus', () => {
       const pending = takePendingImport();
       if (pending) handleIncomingFile(pending);
     });
-    return unsub;
+    return () => {
+      unsubStore();
+      unsubFocus();
+    };
   }, [navigation, handleIncomingFile]);
 
   // Refetch books on focus (deletions in BookDetail should be reflected here).
@@ -545,25 +589,38 @@ export default function LibraryScreen() {
 
   const handlePickEpub = useCallback(async () => {
     if (!user) return null;
-    const result = await pickEpub(pendingBookId);
+    const result = await pickEpub(startOrReuseSession());
     if (!result) return null;
     return { name: result.name, uri: result.uri };
-  }, [user, pendingBookId, pickEpub]);
+  }, [user, pickEpub, startOrReuseSession]);
 
   const handlePickAudio = useCallback(async () => {
     if (!user) return null;
-    const result = await pickAudio(pendingBookId);
+    const result = await pickAudio(startOrReuseSession());
     if (!result) return null;
     return { name: result.name, uri: result.uri };
-  }, [user, pendingBookId, pickAudio]);
+  }, [user, pickAudio, startOrReuseSession]);
 
   const handleConfirm = useCallback(
     async (epub: { name: string; uri: string }, audio: { name: string; uri: string }) => {
       if (!user) return;
       setAdding(true);
       try {
-        const bookId = pendingBookId;
+        const bookId = sessionBookIdRef.current ?? pendingBookId;
+        logger.info('[confirm] saving book', {
+          bookId,
+          expectedEpub: buildCachePath(bookId, 'epub', 'epub'),
+          epubUri: epub.uri,
+          audioUri: audio.uri,
+        });
         const title = epub.name.replace(/\.epub$/i, '') || 'Untitled Book';
+        const totalDurationSeconds = await probeAudioDuration(audio.uri);
+        if (totalDurationSeconds <= 0) {
+          Alert.alert(
+            "Couldn't read audio duration",
+            "Reader↔audio sync may be inaccurate for this book until the file is replaced.",
+          );
+        }
         const now = Date.now();
         const bookData = {
           title,
@@ -573,12 +630,14 @@ export default function LibraryScreen() {
           audioPath: audio.uri,
           syncMapPath: null,
           totalChapters: 1,
-          totalDurationSeconds: 0,
+          totalDurationSeconds,
           syncMode: 'chapter' as const,
           addedAt: now,
           updatedAt: now,
         };
         await localWriteBook(user.uid, bookId, bookData);
+        endSession();
+        setPreselectedIncoming(null);
         setModalVisible(false);
         navigation.navigate('BookDetail', { bookId });
         writeBook(user.uid, bookId, bookData).catch(() => {});
@@ -589,7 +648,7 @@ export default function LibraryScreen() {
         setAdding(false);
       }
     },
-    [user, pendingBookId, navigation],
+    [user, pendingBookId, navigation, endSession],
   );
 
   const handleImportNextcloud = useCallback(async () => {
@@ -637,6 +696,13 @@ export default function LibraryScreen() {
         const audioUri = buildCachePath(bookId, 'audio', ext);
         await downloadNextcloudFile(epub.path, epubUri);
         await downloadNextcloudFile(audio.path, audioUri);
+        const totalDurationSeconds = await probeAudioDuration(audioUri);
+        if (totalDurationSeconds <= 0) {
+          Alert.alert(
+            "Couldn't read audio duration",
+            "Reader↔audio sync may be inaccurate for this book until the file is replaced.",
+          );
+        }
         const now = Date.now();
         const bookData = {
           title: folder.name,
@@ -646,7 +712,7 @@ export default function LibraryScreen() {
           audioPath: audioUri,
           syncMapPath: null,
           totalChapters: 1,
-          totalDurationSeconds: 0,
+          totalDurationSeconds,
           syncMode: 'chapter' as const,
           addedAt: now,
           updatedAt: now,
@@ -709,6 +775,13 @@ export default function LibraryScreen() {
         const audioUri = buildCachePath(bookId, 'audio', ext);
         await downloadGDriveFile(epub.id, epubUri);
         await downloadGDriveFile(audio.id, audioUri);
+        const totalDurationSeconds = await probeAudioDuration(audioUri);
+        if (totalDurationSeconds <= 0) {
+          Alert.alert(
+            "Couldn't read audio duration",
+            "Reader↔audio sync may be inaccurate for this book until the file is replaced.",
+          );
+        }
         const now = Date.now();
         const bookData = {
           title: folder.name,
@@ -718,7 +791,7 @@ export default function LibraryScreen() {
           audioPath: audioUri,
           syncMapPath: null,
           totalChapters: 1,
-          totalDurationSeconds: 0,
+          totalDurationSeconds,
           syncMode: 'chapter' as const,
           addedAt: now,
           updatedAt: now,
@@ -781,6 +854,13 @@ export default function LibraryScreen() {
         const audioUri = buildCachePath(bookId, 'audio', ext);
         copyFromICloud(epub.uri, epubUri);
         copyFromICloud(audio.uri, audioUri);
+        const totalDurationSeconds = await probeAudioDuration(audioUri);
+        if (totalDurationSeconds <= 0) {
+          Alert.alert(
+            "Couldn't read audio duration",
+            "Reader↔audio sync may be inaccurate for this book until the file is replaced.",
+          );
+        }
         const now = Date.now();
         const bookData = {
           title: folder.name,
@@ -790,7 +870,7 @@ export default function LibraryScreen() {
           audioPath: audioUri,
           syncMapPath: null,
           totalChapters: 1,
-          totalDurationSeconds: 0,
+          totalDurationSeconds,
           syncMode: 'chapter' as const,
           addedAt: now,
           updatedAt: now,
@@ -937,8 +1017,19 @@ export default function LibraryScreen() {
       <AddBookModal
         visible={modalVisible}
         onClose={() => {
+          // If the session still has a bookId here, the user dismissed
+          // without saving — any files cached under that id (an incoming
+          // "Open with" file or picker selections) are orphans. Clean
+          // them up before the ref clears.
+          const orphanBookId = sessionBookIdRef.current;
           setModalVisible(false);
           setPreselectedIncoming(null);
+          endSession();
+          if (orphanBookId) {
+            deleteCacheFilesForBookId(orphanBookId).catch((err) =>
+              logger.warn('orphan cleanup on dismiss failed', err),
+            );
+          }
         }}
         onPickEpub={handlePickEpub}
         onPickAudio={handlePickAudio}

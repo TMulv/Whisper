@@ -22,7 +22,7 @@ const baseAlignment = buildLayer0({
 describe('handoff — L0 readerToAudio', () => {
   it('maps chapter start exactly to audio chapter start', () => {
     const r = readerToAudio(
-      { chapterIndex: 0, cfi: '', charOffset: 0, percentComplete: 0 },
+      { chapterIndex: 0, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0 },
       baseAlignment,
     );
     assert.equal(r.chapterIndex, 0);
@@ -32,7 +32,7 @@ describe('handoff — L0 readerToAudio', () => {
   it('maps 50% into chapter 2 to 15 min into audio', () => {
     // Chapter 2 spans epub percent 0.333..0.666. Halfway in is 0.5 overall.
     const r = readerToAudio(
-      { chapterIndex: 1, cfi: '', charOffset: 0, percentComplete: 0.5 },
+      { chapterIndex: 1, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0.5 },
       baseAlignment,
     );
     assert.equal(r.chapterIndex, 1);
@@ -42,7 +42,7 @@ describe('handoff — L0 readerToAudio', () => {
 
   it('chapter end lands at chapter end (not overshoot)', () => {
     const r = readerToAudio(
-      { chapterIndex: 2, cfi: '', charOffset: 0, percentComplete: 1.0 },
+      { chapterIndex: 2, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 1.0 },
       baseAlignment,
     );
     assert.equal(r.chapterIndex, 2);
@@ -52,7 +52,7 @@ describe('handoff — L0 readerToAudio', () => {
 
   it('returns zero position when alignment is null', () => {
     const r = readerToAudio(
-      { chapterIndex: 0, cfi: '', charOffset: 0, percentComplete: 0.5 },
+      { chapterIndex: 0, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0.5 },
       null,
     );
     assert.equal(r.timestampSeconds, 0);
@@ -157,7 +157,7 @@ describe('handoff — L1 anchors win over L0 proportional', () => {
 
   it('readerToAudio interpolates between two anchors', () => {
     const r = readerToAudio(
-      { chapterIndex: 1, cfi: '', charOffset: 0, percentComplete: 0.45 },
+      { chapterIndex: 1, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0.45 },
       withAnchors,
     );
     // Between first (0.40 / 650s) and second (0.50 / 900s). Linear: 0.45 → 775s.
@@ -166,11 +166,44 @@ describe('handoff — L1 anchors win over L0 proportional', () => {
 
   it('falls back to L0 for chapters without anchors', () => {
     const r = readerToAudio(
-      { chapterIndex: 0, cfi: '', charOffset: 0, percentComplete: 0.1667 },
+      { chapterIndex: 0, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0.1667 },
       withAnchors,
     );
     // ~half way through ch 1: audio ~300s
     assert.ok(Math.abs(r.timestampSeconds - 300) < 10);
+  });
+});
+
+describe('handoff — Pre-L0 chapterFraction tier', () => {
+  it('uses chapterFraction (page-based) when percentComplete is 0', () => {
+    // Ch 1 [600, 1200] = 600s span. chapterFraction=0.5 → 900s
+    const r = readerToAudio(
+      { chapterIndex: 1, cfi: '', charOffset: 0, chapterFraction: 0.5, percentComplete: 0 },
+      baseAlignment,
+    );
+    assert.equal(r.chapterIndex, 1);
+    assert.ok(Math.abs(r.timestampSeconds - 900) < 1);
+  });
+
+  it('skips tier when chapterFraction is -1 (unavailable)', () => {
+    // No page data → chapterFraction: -1 → falls through to L0 proportional.
+    const r = readerToAudio(
+      { chapterIndex: 1, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0 },
+      baseAlignment,
+    );
+    // L0: percentComplete=0 lands at chapter 1 start → 600s
+    assert.equal(r.chapterIndex, 1);
+    assert.ok(Math.abs(r.timestampSeconds - 600) < 1);
+  });
+
+  it('skips tier when percentComplete > 0 (uses normal tiers)', () => {
+    // percentComplete is available, so the pre-L0 tier is skipped.
+    const r = readerToAudio(
+      { chapterIndex: 1, cfi: '', charOffset: 0, chapterFraction: 0.9, percentComplete: 0.5 },
+      baseAlignment,
+    );
+    // L0: 0.5 overall → halfway in ch 1 → 900s (ignores chapterFraction)
+    assert.ok(Math.abs(r.timestampSeconds - 900) < 1);
   });
 });
 
@@ -183,7 +216,7 @@ describe('handoff — edge: single-chapter book', () => {
 
   it('mid-book percent maps to mid-duration', () => {
     const r = readerToAudio(
-      { chapterIndex: 0, cfi: '', charOffset: 0, percentComplete: 0.5 },
+      { chapterIndex: 0, cfi: '', charOffset: 0, chapterFraction: -1, percentComplete: 0.5 },
       single,
     );
     assert.ok(Math.abs(r.timestampSeconds - 1800) < 1);

@@ -2,6 +2,9 @@ export interface EpubPosition {
   chapterIndex: number;
   cfi: string;
   charOffset: number;
+  /** Progress within the current chapter [0, 1], computed from page/total.
+   * -1 means no data available (e.g., pre-render, or layout not paginated yet). */
+  chapterFraction: number;
   percentComplete: number;
 }
 

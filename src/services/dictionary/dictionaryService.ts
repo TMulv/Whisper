@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logger } from '@/utils/logger';
-import { COMMON_WORDS } from './commonWords';
 
 export interface DictionaryDefinition {
   partOfSpeech: string;
@@ -143,37 +142,4 @@ export async function clearCache(): Promise<void> {
   const keys = idx.map(keyFor);
   if (keys.length) await AsyncStorage.multiRemove(keys);
   await AsyncStorage.removeItem(CACHE_INDEX_KEY);
-}
-
-export interface PreloadProgress {
-  completed: number;
-  total: number;
-  cached: number;
-  failed: number;
-}
-
-export async function preloadCommonWords(
-  onProgress?: (p: PreloadProgress) => void,
-  signal?: { cancelled: boolean },
-): Promise<PreloadProgress> {
-  const existing = new Set(await readIndex());
-  const queue = COMMON_WORDS.filter((w) => !existing.has(w.toLowerCase()));
-  const total = queue.length;
-  let cached = 0;
-  let failed = 0;
-
-  for (let i = 0; i < total; i++) {
-    if (signal?.cancelled) break;
-    const w = queue[i];
-    const entry = await fetchFromNetwork(w);
-    if (entry) {
-      await cacheEntry(entry).catch(() => {});
-      cached++;
-    } else {
-      failed++;
-    }
-    onProgress?.({ completed: i + 1, total, cached, failed });
-  }
-
-  return { completed: total, total, cached, failed };
 }

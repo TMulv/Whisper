@@ -137,162 +137,142 @@ function findPartner(
   return null;
 }
 
-// ── Selection slot card ───────────────────────────────────────────────────────
+// ── Selection slot card (hero card with large interaction area) ─────────────────
 
 interface SlotProps {
   kind: PickKind;
   label: string;
   selection: Selection | null;
   onClear: () => void;
+  onTap: () => Promise<void>;
 }
 
-function SelectionSlot({ kind, label, selection, onClear }: SlotProps) {
+function SelectionSlot({ kind, label, selection, onClear, onTap }: SlotProps) {
   const filled = selection !== null;
   const glow = useRef(new Animated.Value(filled ? 1 : 0)).current;
+  const [loading, setLoading] = React.useState(false);
 
   useEffect(() => {
     Animated.timing(glow, {
       toValue: filled ? 1 : 0,
-      duration: 360,
+      duration: 400,
       useNativeDriver: false,
     }).start();
   }, [filled]);
 
   const borderColor = glow.interpolate({
     inputRange: [0, 1],
-    outputRange: [C.rule, C.brass],
+    outputRange: [C.faint, C.brass],
   });
   const bg = glow.interpolate({
     inputRange: [0, 1],
-    outputRange: [C.vellum, C.chamber],
+    outputRange: [C.vellum, 'rgba(20, 20, 31, 0.8)'],
   });
+
+  const handleTap = async () => {
+    setLoading(true);
+    try {
+      await onTap();
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <Animated.View
       style={[
-        styles.slot,
+        styles.slotHero,
         {
           borderColor,
           backgroundColor: bg,
-          borderStyle: filled ? 'solid' : 'dashed',
         },
       ]}
     >
-      <View style={styles.slotBadge}>
-        <Text style={styles.slotBadgeGlyph}>{kind === 'epub' ? '📖' : '🎧'}</Text>
-      </View>
-      <View style={styles.slotBody}>
-        <Text style={styles.slotLabel}>{label}</Text>
-        {filled ? (
-          <Text style={styles.slotName} numberOfLines={1} ellipsizeMode="middle">
-            {stripExt(selection!.name)}
-          </Text>
-        ) : (
-          <Text style={styles.slotEmpty}>Tap a file below to pair</Text>
-        )}
-      </View>
-      {filled ? (
-        <TouchableOpacity
-          onPress={onClear}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          style={styles.slotClear}
-        >
-          <Text style={styles.slotClearGlyph}>×</Text>
-        </TouchableOpacity>
-      ) : (
-        <View style={styles.slotIndicator}>
-          <View style={[styles.slotIndicatorDot, { opacity: 0.4 }]} />
-          <View style={[styles.slotIndicatorDot, { opacity: 0.25 }]} />
-          <View style={[styles.slotIndicatorDot, { opacity: 0.15 }]} />
+      <Pressable
+        onPress={handleTap}
+        disabled={loading}
+        style={styles.slotTouchable}
+      >
+        <View style={styles.slotContent}>
+          <Text style={styles.slotIcon}>{kind === 'epub' ? '📖' : '🎧'}</Text>
+          <Text style={styles.slotLabel}>{label}</Text>
+          {filled ? (
+            <Text style={styles.slotName} numberOfLines={2} ellipsizeMode="tail">
+              {stripExt(selection!.name)}
+            </Text>
+          ) : (
+            <Text style={styles.slotPrompt}>Tap to select</Text>
+          )}
         </View>
-      )}
+        {loading && <ActivityIndicator color={C.brass} style={{ marginRight: 8 }} />}
+        {filled && !loading && (
+          <TouchableOpacity
+            onPress={(e) => {
+              e.stopPropagation();
+              onClear();
+            }}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            style={styles.slotClearBtn}
+          >
+            <Text style={styles.slotClearGlyph}>✕</Text>
+          </TouchableOpacity>
+        )}
+      </Pressable>
     </Animated.View>
   );
 }
 
-// ── Tab bar ───────────────────────────────────────────────────────────────────
+// ── Browse options (minimal, secondary) ───────────────────────────────────────
 
-const TABS: Array<{ key: TabKey; label: string; glyph: string }> = [
-  { key: 'recents', label: 'Recents', glyph: '◷' },
-  { key: 'downloads', label: 'Downloads', glyph: '↓' },
-  { key: 'documents', label: 'Documents', glyph: '◰' },
-  { key: 'cloud', label: 'Cloud', glyph: '☁' },
-];
-
-interface TabBarProps {
-  active: TabKey;
-  onChange: (key: TabKey) => void;
-  counts: Record<TabKey, number | null>;
+interface BrowseOptionsProps {
+  hasRecents: boolean;
+  hasDownloads: boolean;
+  hasCloud: boolean;
+  onBrowseDevice: () => void;
+  onBrowseDownloads: () => void;
+  onBrowseCloud: () => void;
 }
 
-function TabBar({ active, onChange, counts }: TabBarProps) {
-  const [widths, setWidths] = useState<Record<TabKey, number>>({
-    recents: 0,
-    downloads: 0,
-    documents: 0,
-    cloud: 0,
-  });
-  const [offsets, setOffsets] = useState<Record<TabKey, number>>({
-    recents: 0,
-    downloads: 0,
-    documents: 0,
-    cloud: 0,
-  });
-
-  const indicatorX = useRef(new Animated.Value(0)).current;
-  const indicatorW = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const w = widths[active];
-    const x = offsets[active];
-    if (!w) return;
-    Animated.parallel([
-      Animated.spring(indicatorX, { toValue: x, tension: 180, friction: 20, useNativeDriver: false }),
-      Animated.spring(indicatorW, { toValue: w, tension: 180, friction: 20, useNativeDriver: false }),
-    ]).start();
-  }, [active, widths, offsets]);
-
-  const handleLayout = (key: TabKey) => (e: LayoutChangeEvent) => {
-    const { width, x } = e.nativeEvent.layout;
-    setWidths((prev) => ({ ...prev, [key]: width }));
-    setOffsets((prev) => ({ ...prev, [key]: x }));
-  };
-
+function BrowseOptions({
+  hasRecents,
+  hasDownloads,
+  hasCloud,
+  onBrowseDevice,
+  onBrowseDownloads,
+  onBrowseCloud,
+}: BrowseOptionsProps) {
   return (
-    <View style={styles.tabBarWrap}>
-      <View style={styles.tabBar}>
-        {TABS.map((t) => {
-          const isActive = active === t.key;
-          const count = counts[t.key];
-          return (
-            <Pressable
-              key={t.key}
-              onPress={() => onChange(t.key)}
-              onLayout={handleLayout(t.key)}
-              style={styles.tab}
-              android_ripple={{ color: C.rail, borderless: false }}
-            >
-              <Text style={styles.tabGlyph}>{t.glyph}</Text>
-              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{t.label}</Text>
-              {count !== null && count > 0 && (
-                <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}>
-                  <Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>
-                    {count > 99 ? '99' : count}
-                  </Text>
-                </View>
-              )}
-            </Pressable>
-          );
-        })}
-        <Animated.View
-          style={[
-            styles.tabIndicator,
-            { transform: [{ translateX: indicatorX }], width: indicatorW },
-          ]}
+    <View style={styles.browseContainer}>
+      <Text style={styles.browseHeading}>More options</Text>
+      <View style={styles.browseGrid}>
+        <Pressable
+          onPress={onBrowseDevice}
+          style={styles.browseTile}
+          android_ripple={{ color: C.rail }}
         >
-          <View style={styles.tabIndicatorBar} />
-          <View style={styles.tabIndicatorNub} />
-        </Animated.View>
+          <Text style={styles.browseTileIcon}>▦</Text>
+          <Text style={styles.browseTileLabel}>Browse device</Text>
+        </Pressable>
+        {hasDownloads && (
+          <Pressable
+            onPress={onBrowseDownloads}
+            style={styles.browseTile}
+            android_ripple={{ color: C.rail }}
+          >
+            <Text style={styles.browseTileIcon}>↓</Text>
+            <Text style={styles.browseTileLabel}>Downloaded</Text>
+          </Pressable>
+        )}
+        {hasCloud && (
+          <Pressable
+            onPress={onBrowseCloud}
+            style={styles.browseTile}
+            android_ripple={{ color: C.rail }}
+          >
+            <Text style={styles.browseTileIcon}>☁</Text>
+            <Text style={styles.browseTileLabel}>Cloud</Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -489,7 +469,6 @@ export default function OpenFromBrowser({
   recentBooks = [],
   cloudSources = [],
 }: Props) {
-  const [tab, setTab] = useState<TabKey>('recents');
   const [recents, setRecents] = useState<RecentPick[]>([]);
   const [cached, setCached] = useState<CachedFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -893,265 +872,283 @@ export default function OpenFromBrowser({
     );
   };
 
+  const showBrowseOptions = !loading && (cached.length > 0 || cloudSources.some((c) => c.available));
+
   return (
-    <View style={styles.root}>
-      {/* Selection summary */}
-      <View style={styles.slotRow}>
-        <SelectionSlot kind="epub" label="TEXT" selection={epub} onClear={onClearEpub} />
-        <View style={styles.slotBridge}>
-          <View style={[styles.slotBridgeDot, (epub || audio) && styles.slotBridgeDotActive]} />
-          <View style={styles.slotBridgeLine} />
-          <View style={[styles.slotBridgeDot, bothReady && styles.slotBridgeDotActive]} />
+    <ScrollView style={styles.root} contentContainerStyle={styles.rootContent} showsVerticalScrollIndicator={false}>
+      {/* ─────── Hero: Pairing Action ───────── */}
+      <View style={styles.heroSection}>
+        <View style={styles.slotPair}>
+          <SelectionSlot
+            kind="epub"
+            label="Text"
+            selection={epub}
+            onClear={onClearEpub}
+            onTap={async () => {
+              const r = await onPickEpubDevice();
+              if (r) selectEpubWithMatch(r);
+              loadRecents();
+              loadCached();
+            }}
+          />
+          <SelectionSlot
+            kind="audio"
+            label="Audio"
+            selection={audio}
+            onClear={onClearAudio}
+            onTap={async () => {
+              const r = await onPickAudioDevice();
+              if (r) selectAudioWithMatch(r);
+              loadRecents();
+              loadCached();
+            }}
+          />
         </View>
-        <SelectionSlot kind="audio" label="AUDIO" selection={audio} onClear={onClearAudio} />
-      </View>
 
-      {/* Tab bar */}
-      <TabBar active={tab} onChange={setTab} counts={counts} />
+        {/* Status message */}
+        <View style={styles.statusMessage}>
+          <Text style={styles.statusText}>
+            {bothReady
+              ? '✓ Ready to pair'
+              : epub && !audio
+              ? 'Select audio to complete pairing'
+              : !epub && audio
+              ? 'Select text to complete pairing'
+              : 'Select both to get started'}
+          </Text>
+        </View>
 
-      {/* Tab content */}
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {renderTab()}
-        <View style={{ height: 24 }} />
-      </ScrollView>
-
-      {/* Action footer */}
-      <View style={styles.footer}>
-        <View style={styles.footerBar} />
-        {bothReady ? (
+        {/* Primary action */}
+        {bothReady && (
           <TouchableOpacity
-            style={[styles.primary, confirming && { opacity: 0.7 }]}
+            style={[styles.actionButton, confirming && styles.actionButtonDisabled]}
             onPress={onConfirm}
             disabled={confirming}
-            activeOpacity={0.88}
+            activeOpacity={0.85}
           >
             {confirming ? (
-              <ActivityIndicator size="small" color={C.ink} style={{ marginRight: 10 }} />
+              <>
+                <ActivityIndicator size="small" color={C.ink} style={{ marginRight: 8 }} />
+                <Text style={styles.actionButtonText}>Adding to library…</Text>
+              </>
             ) : (
-              <View style={styles.primaryGlyph}>
-                <Text style={styles.primaryGlyphText}>✦</Text>
-              </View>
+              <>
+                <Text style={styles.actionButtonIcon}>→</Text>
+                <Text style={styles.actionButtonText}>Add to library</Text>
+              </>
             )}
-            <Text style={styles.primaryText}>
-              {confirming ? 'Adding to library' : 'Pair & add to library'}
-            </Text>
           </TouchableOpacity>
-        ) : (
-          <View style={styles.footerHintRow}>
-            <View style={styles.footerHintGlyph}>
-              <Text style={styles.footerHintGlyphText}>
-                {epub && !audio ? '🎧' : !epub && audio ? '📖' : '✦'}
-              </Text>
-            </View>
-            <Text style={styles.footerHint}>
-              {!epub && !audio
-                ? 'Pick one ebook and its audio companion to pair'
-                : epub && !audio
-                ? 'One more — pick the matching audio file'
-                : 'One more — pick the matching ebook'}
-            </Text>
-          </View>
         )}
       </View>
-    </View>
+
+      {/* ─────── Smart Recents (no tab switch needed) ───────── */}
+      {!loading && recents.length > 0 && (
+        <View style={styles.recentsSection}>
+          <Heading
+            eyebrow="Quick access"
+            title="Recent files"
+            actionLabel={recents.length > 0 ? 'Clear' : undefined}
+            onAction={recents.length > 0 ? handleClearRecents : undefined}
+          />
+          {recents.slice(0, 4).map((r, i) => (
+            <FileRow
+              key={`${r.uri}-${i}`}
+              name={r.name}
+              kind={r.kind}
+              sizeBytes={r.sizeBytes}
+              whenTs={r.pickedAt}
+              subLabel="Recent"
+              active={selectedUris.has(r.uri)}
+              onPress={() => handleSelectFile(r.uri, r.name)}
+            />
+          ))}
+        </View>
+      )}
+
+      {/* ─────── Browse More Options ───────── */}
+      {showBrowseOptions && (
+        <BrowseOptions
+          hasRecents={recents.length > 0}
+          hasDownloads={cached.length > 0}
+          hasCloud={cloudSources.some((c) => c.available)}
+          onBrowseDevice={handleBrowseDevice}
+          onBrowseDownloads={handleBrowseDevice}
+          onBrowseCloud={handleBrowseDevice}
+        />
+      )}
+
+      <View style={{ height: 32 }} />
+    </ScrollView>
   );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.ink },
-
-  // Selection slots
-  slotRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 14,
+  root: {
+    flex: 1,
+    backgroundColor: C.ink,
   },
-  slot: {
+  rootContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 20,
+  },
+
+  // ─────── Hero Section: Pairing Action ───────────
+  heroSection: {
+    marginBottom: 28,
+  },
+  slotPair: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+
+  // Selection slot (large, hero style)
+  slotHero: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderRadius: 16,
+    padding: 16,
+    minHeight: 140,
+    justifyContent: 'center',
+  },
+  slotTouchable: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1.2,
-    borderRadius: 14,
-    padding: 12,
-    minHeight: 72,
+    justifyContent: 'space-between',
   },
-  slotBadge: {
-    width: 42,
-    height: 42,
-    borderRadius: 10,
-    backgroundColor: C.ink,
-    borderWidth: 1,
-    borderColor: C.rule,
+  slotContent: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
-  slotBadgeGlyph: { fontSize: 18 },
-  slotBody: { flex: 1 },
+  slotIcon: {
+    fontSize: 32,
+    marginBottom: 8,
+  },
   slotLabel: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '800',
     color: C.brassDim,
-    letterSpacing: 2.4,
-    marginBottom: 3,
+    letterSpacing: 2.2,
+    marginBottom: 8,
+    textTransform: 'uppercase',
   },
   slotName: {
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
     color: C.parchment,
-    letterSpacing: -0.1,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+    lineHeight: 20,
   },
-  slotEmpty: {
-    fontSize: 12,
+  slotPrompt: {
+    fontSize: 13,
     color: C.muted,
     fontStyle: 'italic',
+    textAlign: 'center',
   },
-  slotClear: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: C.brassDim,
+  slotClearBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(201, 169, 110, 0.1)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 6,
   },
   slotClearGlyph: {
-    fontSize: 14,
-    lineHeight: 16,
+    fontSize: 18,
     color: C.brass,
     fontWeight: '300',
     marginTop: -1,
   },
-  slotIndicator: {
-    flexDirection: 'row',
-    marginLeft: 6,
-    gap: 2,
-  },
-  slotIndicatorDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: C.brass,
-  },
 
-  // Bridge between slots
-  slotBridge: {
-    width: 28,
-    flexDirection: 'column',
+  // Status message
+  statusMessage: {
     alignItems: 'center',
-    justifyContent: 'center',
-  },
-  slotBridgeDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: C.rule,
-  },
-  slotBridgeDotActive: {
-    backgroundColor: C.brass,
-  },
-  slotBridgeLine: {
-    width: 1,
-    height: 18,
-    backgroundColor: C.rule,
-    marginVertical: 2,
-  },
-
-  // Tab bar
-  tabBarWrap: {
+    paddingVertical: 12,
+    marginBottom: 12,
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: C.rail,
-    backgroundColor: C.vellum,
+    borderColor: C.rule,
   },
-  tabBar: {
-    flexDirection: 'row',
-    position: 'relative',
-    paddingHorizontal: 6,
-  },
-  tab: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 4,
-  },
-  tabGlyph: {
-    fontSize: 12,
-    color: C.muted,
-    marginRight: 6,
-  },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: C.muted,
-    letterSpacing: 1.4,
-    textTransform: 'uppercase',
-  },
-  tabLabelActive: {
-    color: C.brass,
-  },
-  tabBadge: {
-    marginLeft: 6,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: C.rail,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-  },
-  tabBadgeActive: {
-    backgroundColor: C.brassDim,
-  },
-  tabBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: C.muted,
-  },
-  tabBadgeTextActive: {
-    color: C.parchment,
-  },
-  tabIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    height: 3,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabIndicatorBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 12,
-    right: 12,
-    height: 2,
-    backgroundColor: C.brass,
-    borderTopLeftRadius: 2,
-    borderTopRightRadius: 2,
-  },
-  tabIndicatorNub: {
-    position: 'absolute',
-    bottom: -1,
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: C.brass,
+  statusText: {
+    fontSize: 13,
+    color: C.quill,
+    letterSpacing: 0.2,
   },
 
-  // Scroll
-  scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 18 },
-  tabContent: {},
+  // Action button
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: C.brass,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+  },
+  actionButtonDisabled: {
+    opacity: 0.65,
+  },
+  actionButtonIcon: {
+    fontSize: 16,
+    color: C.ink,
+    marginRight: 8,
+    fontWeight: '500',
+  },
+  actionButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: C.ink,
+    letterSpacing: 0.3,
+  },
+
+  // ─────── Recents Section ───────────
+  recentsSection: {
+    marginBottom: 24,
+  },
+
+  // ─────── Browse Options ───────────
+  browseContainer: {
+    marginBottom: 24,
+  },
+  browseHeading: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: C.brassDim,
+    letterSpacing: 2.2,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
+  browseGrid: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  browseTile: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: C.rail,
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 80,
+  },
+  browseTileIcon: {
+    fontSize: 24,
+    marginBottom: 6,
+  },
+  browseTileLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: C.parchment,
+    textAlign: 'center',
+    letterSpacing: -0.1,
+  },
 
   // Heading
   heading: { marginTop: 8, marginBottom: 10 },
@@ -1168,10 +1165,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   headingTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: C.parchment,
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
   },
   headingRule: {
     flex: 1,
@@ -1488,67 +1485,4 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
-  // Footer
-  footer: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
-    borderTopWidth: 1,
-    borderTopColor: C.rail,
-    backgroundColor: C.vellum,
-  },
-  footerBar: {
-    width: 32,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: C.rule,
-    alignSelf: 'center',
-    marginBottom: 12,
-  },
-  footerHintRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  footerHintGlyph: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: C.rail,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  footerHintGlyphText: {
-    fontSize: 14,
-  },
-  footerHint: {
-    flex: 1,
-    fontSize: 13,
-    color: C.quill,
-    letterSpacing: -0.1,
-    lineHeight: 18,
-  },
-  primary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: C.brass,
-    borderRadius: 14,
-    paddingVertical: 15,
-  },
-  primaryGlyph: {
-    marginRight: 10,
-  },
-  primaryGlyphText: {
-    fontSize: 14,
-    color: C.ink,
-  },
-  primaryText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: C.ink,
-    letterSpacing: 0.4,
-  },
 });

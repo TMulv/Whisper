@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { View, StyleSheet, Linking } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -32,23 +32,6 @@ function classifyFileUrl(url: string): PendingImportFile | null {
   return null;
 }
 
-/** Navigate into LibraryHome with the pending file as a route param.
- *  Falls back to storing in the module store when navigation isn't ready yet. */
-function dispatchIncomingFile(file: PendingImportFile) {
-  if (navigationRef.isReady()) {
-    // Navigate to LibraryHome with the file attached as a param.
-    // React Navigation delivers nested-navigator params via the screen/params shape.
-    (navigationRef as React.RefObject<any>).current?.navigate('Main', {
-      screen: 'Library',
-      params: { screen: 'LibraryHome', params: { incomingFile: file } },
-    });
-  } else {
-    // Navigation isn't ready yet (cold start). Store the file so the
-    // onReady callback can deliver it once navigation initialises.
-    setPendingImport(file);
-  }
-}
-
 // Invisible worker component — registers the alignment hook inside the
 // context tree (usePlaybackState requires being under a rendered tree) and
 // drains the queue while the app is foreground or playing audio.
@@ -58,51 +41,37 @@ function AlignmentWorker() {
 }
 
 export default function App() {
-  const coldStartFile = useRef<PendingImportFile | null>(null);
-
   useEffect(() => {
     installAlignmentPipeline();
 
     // ── Incoming file handling ──────────────────────────────────────────
-    // iOS delivers "Open With" / shared files via the Linking module.
-    // Both the cold-start URL (getInitialURL) and warm-start events (addEventListener)
-    // are handled here. If navigation is not yet ready we store the file and
-    // deliver it in NavigationContainer.onReady below.
+    // iOS delivers "Open With" / shared files via the Linking module. Both
+    // cold-start (getInitialURL) and warm-start (addEventListener) paths
+    // funnel into pendingImportStore, which LibraryScreen subscribes to.
+    // Using a single sink avoids the double-dispatch race we hit before,
+    // where a route-param path and a store-polling path ran concurrently
+    // and each produced a different bookId for the same file.
 
     Linking.getInitialURL().then((url) => {
       if (!url) return;
       const file = classifyFileUrl(url);
-      if (!file) return;
-      if (navigationRef.isReady()) {
-        dispatchIncomingFile(file);
-      } else {
-        coldStartFile.current = file;
-        setPendingImport(file);
-      }
+      if (file) setPendingImport(file);
     });
 
     const sub = Linking.addEventListener('url', ({ url }) => {
       const file = classifyFileUrl(url);
-      if (file) dispatchIncomingFile(file);
+      if (file) setPendingImport(file);
     });
 
     return () => sub.remove();
   }, []);
-
-  const handleNavigationReady = () => {
-    const file = coldStartFile.current;
-    if (file) {
-      coldStartFile.current = null;
-      dispatchIncomingFile(file);
-    }
-  };
 
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
         <NowPlayingProvider>
           <AlignmentWorker />
-          <NavigationContainer ref={navigationRef} onReady={handleNavigationReady}>
+          <NavigationContainer ref={navigationRef}>
             <StatusBar style="auto" />
             <View style={styles.container}>
               <NetworkStatusBanner />
