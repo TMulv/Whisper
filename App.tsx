@@ -3,6 +3,14 @@ import { View, StyleSheet, Linking } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
+import {
+  CormorantGaramond_400Regular,
+  CormorantGaramond_400Regular_Italic,
+  CormorantGaramond_600SemiBold,
+} from '@expo-google-fonts/cormorant-garamond';
+import { Inter_500Medium, Inter_600SemiBold } from '@expo-google-fonts/inter';
+import { Cinzel_400Regular, Cinzel_600SemiBold } from '@expo-google-fonts/cinzel';
 // Initialize Firebase (offline persistence, settings)
 import '@/services/firebase/firebaseConfig';
 import RootNavigator from '@/navigation/RootNavigator';
@@ -41,6 +49,16 @@ function AlignmentWorker() {
 }
 
 export default function App() {
+  useFonts({
+    CormorantGaramond_400Regular,
+    CormorantGaramond_400Regular_Italic,
+    CormorantGaramond_600SemiBold,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Cinzel_400Regular,
+    Cinzel_600SemiBold,
+  });
+
   useEffect(() => {
     installAlignmentPipeline();
 

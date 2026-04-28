@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   Animated,
   Easing,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import type { TranscriptionPhase } from '@/services/sync/assemblyAiAdapter';
 
 interface Props {
@@ -162,8 +163,31 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
   const settleTranslateY = settleAnim.interpolate({ inputRange: [0, 1], outputRange: [-12, 0] });
   const settleOpacity = settleAnim.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0.4, 1, 1] });
 
+  // Completion sequence: glow flash → fade card out → self-remove
+  const [hidden, setHidden] = useState(false);
+  const cardOpacity = useRef(new Animated.Value(1)).current;
+  const glowAnim = useRef(new Animated.Value(0)).current;
+  const completionFiredRef = useRef(false);
+  useEffect(() => {
+    if (!done || completionFiredRef.current) return;
+    completionFiredRef.current = true;
+    Animated.sequence([
+      Animated.delay(200),
+      // Glow in
+      Animated.timing(glowAnim, { toValue: 0.7, duration: 500, useNativeDriver: true, easing: Easing.out(Easing.ease) }),
+      Animated.delay(400),
+      // Glow out
+      Animated.timing(glowAnim, { toValue: 0, duration: 400, useNativeDriver: true, easing: Easing.in(Easing.ease) }),
+      Animated.delay(200),
+      // Fade card out
+      Animated.timing(cardOpacity, { toValue: 0, duration: 700, useNativeDriver: true, easing: Easing.in(Easing.ease) }),
+    ]).start(() => setHidden(true));
+  }, [done, glowAnim, cardOpacity]);
+
+  if (hidden) return null;
+
   return (
-    <View style={styles.card}>
+    <Animated.View style={[styles.card, { opacity: cardOpacity }]}>
       <View style={styles.eyebrow}>
         {done ? (
           <Text style={styles.doneCheck}>✓</Text>
@@ -188,6 +212,7 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
         </View>
       </View>
 
+      <View style={styles.shelfContainer}>
       <View style={styles.shelf}>
         {spines.map((b, i) => {
           const isFilled = i < filledCount;
@@ -215,19 +240,36 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
                     isActive && styles.spineBodyActiveDim,
                   ]}
                 >
-                  <View style={styles.spineHighlight} />
-                  <View style={styles.spineEdgeShadow} />
+                  <LinearGradient
+                    colors={['rgba(255,255,255,0.18)', 'rgba(255,255,255,0)', 'rgba(0,0,0,0)', 'rgba(0,0,0,0.40)']}
+                    locations={[0, 0.14, 0.70, 1]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={StyleSheet.absoluteFill}
+                  />
                   <View style={styles.spineRib1} />
                   <View style={styles.spineRib2} />
                   <View style={styles.spineRib3} />
                   <View style={styles.spineRib4} />
                   <View style={[styles.platePlain, b.tall && styles.plateTall]}>
+                    <LinearGradient
+                      colors={['rgba(255,245,220,0.95)', C.gilt, '#8C6A28']}
+                      locations={[0, 0.45, 1]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={StyleSheet.absoluteFill}
+                    />
                     <Text style={[styles.plateNum, b.tall && styles.plateNumTall]}>{b.roman}</Text>
                   </View>
                   {b.height > SPINE_BASE_H + SPINE_VAR_H * 0.55 && (
                     <View style={styles.bandLow} />
                   )}
-                  <View style={styles.spineTopGilt} />
+                  <LinearGradient
+                    colors={['rgba(232,206,146,0.70)', 'rgba(201,169,110,0.15)']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.spineTopGilt}
+                  />
                   <View style={styles.spineBottomShadow} />
                   {isActive && (
                     <Animated.View
@@ -240,7 +282,15 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
                           }),
                         },
                       ]}
-                    />
+                    >
+                      <LinearGradient
+                        colors={['rgba(232,206,146,0)', 'rgba(232,206,146,0.50)', 'rgba(255,245,214,0.85)']}
+                        locations={[0, 0.6, 1]}
+                        start={{ x: 0, y: 1 }}
+                        end={{ x: 0, y: 0 }}
+                        style={StyleSheet.absoluteFill}
+                      />
+                    </Animated.View>
                   )}
                 </View>
               ) : (
@@ -249,6 +299,12 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
             </Animated.View>
           );
         })}
+      </View>
+        {/* Completion glow overlay — flashes gilt across the full shelf */}
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, styles.glowOverlay, { opacity: glowAnim }]}
+        />
       </View>
 
       <View style={styles.board}>
@@ -269,7 +325,7 @@ export default function TranscriptionShelf({ bookId, progress, phase, etaSeconds
           You can read or listen now — the shelf fills in the background.
         </Text>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -314,7 +370,7 @@ const styles = StyleSheet.create({
   },
   eyebrowText: {
     fontSize: 9.5,
-    fontWeight: '600',
+    fontFamily: 'Inter_600SemiBold',
     color: C.giltDeep,
     letterSpacing: 2.6,
   },
@@ -324,7 +380,7 @@ const styles = StyleSheet.create({
   doneCheck: {
     fontSize: 11,
     color: C.gilt,
-    fontWeight: '700',
+    fontFamily: 'Inter_600SemiBold',
     lineHeight: 14,
   },
 
@@ -354,15 +410,14 @@ const styles = StyleSheet.create({
   },
   counter: {
     fontSize: 52,
-    fontWeight: '700',
+    fontFamily: 'CormorantGaramond_600SemiBold',
     color: C.giltWarm,
     lineHeight: 52,
     fontVariant: ['tabular-nums'],
   },
   counterOf: {
     fontSize: 20,
-    fontStyle: 'italic',
-    fontWeight: '400',
+    fontFamily: 'CormorantGaramond_400Regular_Italic',
     color: C.giltDeep,
   },
   phaseWrap: {
@@ -372,22 +427,29 @@ const styles = StyleSheet.create({
   },
   phaseLabel: {
     fontSize: 11,
-    fontWeight: '600',
+    fontFamily: 'Inter_600SemiBold',
     color: C.cream,
     letterSpacing: 0.4,
   },
   phaseEta: {
     fontSize: 12,
-    fontStyle: 'italic',
+    fontFamily: 'CormorantGaramond_400Regular_Italic',
     color: C.muted,
     marginTop: 2,
   },
 
+  shelfContainer: {
+    position: 'relative',
+  },
   shelf: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 2,
     paddingTop: 6,
+  },
+  glowOverlay: {
+    backgroundColor: C.gilt,
+    borderRadius: 4,
   },
 
   spineWrap: {
@@ -405,18 +467,6 @@ const styles = StyleSheet.create({
   },
   spineBodyActiveDim: {
     opacity: 0.55,
-  },
-  spineHighlight: {
-    position: 'absolute',
-    top: 0, bottom: 0, left: 0,
-    width: '8%',
-    backgroundColor: 'rgba(255,255,255,0.10)',
-  },
-  spineEdgeShadow: {
-    position: 'absolute',
-    top: 0, bottom: 0, right: 0,
-    width: '12%',
-    backgroundColor: 'rgba(0,0,0,0.30)',
   },
   spineTopGilt: {
     position: 'absolute',
@@ -467,7 +517,6 @@ const styles = StyleSheet.create({
     left: '14%', right: '14%',
     top: '36%',
     height: '14%',
-    backgroundColor: C.gilt,
     borderRadius: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -480,7 +529,7 @@ const styles = StyleSheet.create({
   plateNum: {
     fontSize: 7,
     color: 'rgba(20,12,4,0.85)',
-    fontWeight: '700',
+    fontFamily: 'Cinzel_600SemiBold',
     letterSpacing: 0.6,
   },
   plateNumTall: {
@@ -501,9 +550,9 @@ const styles = StyleSheet.create({
   activeFill: {
     position: 'absolute',
     left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(232,206,146,0.55)',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,245,214,0.85)',
+    overflow: 'hidden',
   },
 
   // Empty (ghost) spine
@@ -542,7 +591,7 @@ const styles = StyleSheet.create({
   },
   milestone: {
     fontSize: 10,
-    fontStyle: 'italic',
+    fontFamily: 'Cinzel_400Regular',
     color: C.giltDeep,
   },
 
@@ -554,7 +603,7 @@ const styles = StyleSheet.create({
   },
   footnote: {
     fontSize: 12.5,
-    fontStyle: 'italic',
+    fontFamily: 'CormorantGaramond_400Regular_Italic',
     color: C.muted,
     lineHeight: 17,
   },

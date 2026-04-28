@@ -544,7 +544,7 @@ export default function BookDetailScreen() {
           </View>
 
           {/* ── Transcription progress ─────────────────────────────────────── */}
-          {txStatus && txStatus.fraction < 1 && (
+          {txStatus && (
             <View style={styles.shelfSection}>
               <TranscriptionShelf
                 bookId={params.bookId}
