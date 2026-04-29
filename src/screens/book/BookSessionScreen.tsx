@@ -1,14 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View,
-  Text,
-  TouchableOpacity,
   StyleSheet,
   Animated,
   BackHandler,
   Platform,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,11 +17,6 @@ import { getCachedPath } from '@/services/storage/localStorageService';
 import { prepareBookForPlayback } from '@/services/audio/prepareBookForPlayback';
 import { seekToTimestamp } from '@/services/audio/trackPlayerService';
 import {
-  loadCachedAssemblyAiWords,
-} from '@/services/sync/assemblyAiAdapter';
-import {
-  findAudioWordMatch,
-  tokenizeSnippet,
   readerToAudio,
 } from '@/services/sync/handoff';
 import { getOrBuildLayer0 } from '@/services/sync/alignmentStore';
@@ -33,7 +25,7 @@ import { POSITIONS_CACHE_KEY } from '@/constants/config';
 import { logger } from '@/utils/logger';
 import ReaderView, { ReaderViewRef } from '@/components/book/ReaderView';
 import ListenView from '@/components/book/ListenView';
-import ModeToggle from '@/components/book/ModeToggle';
+import ReaderChrome, { ReaderChromeRef } from '@/components/book/ReaderChrome';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BookSession'>;
 
@@ -42,7 +34,6 @@ const FADE_MS = 180;
 export default function BookSessionScreen() {
   const { params } = useRoute<Props['route']>();
   const navigation = useNavigation();
-  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { book: nowPlayingBook, chapters: audioChapters, startPlayback } = useNowPlaying();
 
@@ -53,8 +44,32 @@ export default function BookSessionScreen() {
   const resumeFromAudio = !!params.resumeFromAudio;
 
   const readerRef = useRef<ReaderViewRef>(null);
+  const chromeRef = useRef<ReaderChromeRef>(null);
   const readerOpacity = useRef(new Animated.Value(params.mode === 'read' ? 1 : 0)).current;
   const listenOpacity = useRef(new Animated.Value(params.mode === 'listen' ? 1 : 0)).current;
+  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia' | 'eink'>('light');
+
+  const refreshTheme = useCallback(() => {
+    AsyncStorage.getItem('@whisper/theme').then((v) => {
+      if (v === 'light' || v === 'dark' || v === 'sepia' || v === 'eink') {
+        setTheme(v);
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshTheme();
+  }, [refreshTheme]);
+
+  const bgColor =
+    theme === 'dark' ? '#121212'
+    : theme === 'sepia' ? '#f5efe0'
+    : '#ffffff';
+  const textColor = theme === 'dark' ? '#E8DFC8' : '#2A2520';
+
+  const handleOpenMenu = useCallback(() => {
+    readerRef.current?.openMenu();
+  }, []);
 
   const audioLoadedForThisBook = nowPlayingBook?.id === params.bookId;
 
@@ -171,6 +186,7 @@ export default function BookSessionScreen() {
   }, [readerOpacity, listenOpacity]);
 
   const handleSwitchMode = useCallback(async (next: BookSessionMode) => {
+    refreshTheme();
     if (next === mode || switching) return;
 
     if (next === 'listen') {
@@ -200,24 +216,6 @@ export default function BookSessionScreen() {
             ? livePos
             : (readerRef.current?.getLastKnownPosition() ?? undefined);
 
-        const wordMatch = async (
-          audioPath: string | null | undefined,
-          hintSeconds: number,
-        ): Promise<number | null> => {
-          if (!audioPath) return null;
-          try {
-            const cachedWords = await loadCachedAssemblyAiWords(audioPath);
-            const snippetWords = await readerRef.current?.getVisibleSnippet(8, 1500);
-            if (!cachedWords || cachedWords.length === 0) return null;
-            if (!snippetWords || snippetWords.length < 3) return null;
-            const tokens = tokenizeSnippet(snippetWords.join(' '));
-            return findAudioWordMatch(tokens, cachedWords, hintSeconds);
-          } catch (err) {
-            logger.warn('BookSession: word-match failed', err);
-            return null;
-          }
-        };
-
         if (audioLoadedForThisBook && audioChapters.length > 0 && epubPos) {
           // Audio already loaded — just seek to the reader's current position.
           const alignment = await getOrBuildLayer0(
@@ -235,29 +233,18 @@ export default function BookSessionScreen() {
             },
             alignment,
           );
-          const audioPath = nowPlayingBook?.localAudioUri ?? null;
-          const matched = await wordMatch(audioPath, target.timestampSeconds);
-          const seekTs = Math.max(0, matched ?? target.timestampSeconds);
+          const seekTs = Math.max(0, target.timestampSeconds);
           logger.info('BookSession: seeking loaded audio to reader position', {
             l0: target.timestampSeconds,
-            matched,
             seekTs,
           });
           await seekToTimestamp(seekTs);
         } else if (!audioLoadedForThisBook) {
           // Audio not loaded — prepare from disk, then start at the reader's
-          // position (word-matched if AAI cache available, else L0).
+          // position (resolved through L0/L0.5/L1 in alignmentStore).
           const prepared = await prepareBookForPlayback(user.uid, params.bookId, epubPos ?? undefined);
           if (prepared) {
-            const audioPath = prepared.localBook.localAudioUri;
-            const matched = await wordMatch(audioPath, prepared.startTimestamp);
-            const startTs = matched ?? prepared.startTimestamp;
-            logger.info('BookSession: starting audio at reader position', {
-              hint: prepared.startTimestamp,
-              matched,
-              startTs,
-            });
-            await startPlayback(prepared.localBook, prepared.chapters, startTs);
+            await startPlayback(prepared.localBook, prepared.chapters, prepared.startTimestamp);
           }
         }
       } catch (err) {
@@ -287,34 +274,10 @@ export default function BookSessionScreen() {
 
     setMode(next);
     animateTo(next);
-  }, [mode, switching, audioLoadedForThisBook, audioChapters, hasAudio, user, params.bookId, nowPlayingBook, startPlayback, animateTo]);
+  }, [mode, switching, audioLoadedForThisBook, audioChapters, hasAudio, user, params.bookId, startPlayback, animateTo]);
 
   return (
-    <View style={styles.container}>
-      <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => navigation.goBack()}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          accessibilityLabel="Close book"
-          accessibilityRole="button"
-        >
-          <Text style={styles.backIcon}>⌄</Text>
-        </TouchableOpacity>
-
-        <View style={styles.toggleSlot}>
-          {showToggle && (
-            <ModeToggle
-              mode={mode}
-              onChange={handleSwitchMode}
-              outOfSync={false}
-            />
-          )}
-        </View>
-
-        <View style={styles.rightSlot} />
-      </View>
-
+    <View style={[styles.container, { backgroundColor: bgColor }]}>
       <View style={styles.body}>
         {hasEpub && (
           <Animated.View
@@ -339,6 +302,17 @@ export default function BookSessionScreen() {
           </Animated.View>
         )}
       </View>
+
+      <ReaderChrome
+        ref={chromeRef}
+        mode={mode}
+        showToggle={showToggle}
+        bgColor={bgColor}
+        textColor={textColor}
+        onSwitchMode={handleSwitchMode}
+        onClose={() => navigation.goBack()}
+        onOpenMenu={handleOpenMenu}
+      />
     </View>
   );
 }
@@ -346,36 +320,6 @@ export default function BookSessionScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0D0D1A',
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-    backgroundColor: 'transparent',
-    zIndex: 100,
-  },
-  backBtn: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backIcon: {
-    fontSize: 28,
-    color: '#fff',
-    lineHeight: 28,
-    marginTop: -6,
-  },
-  toggleSlot: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rightSlot: {
-    width: 40,
-    height: 40,
   },
   body: {
     flex: 1,

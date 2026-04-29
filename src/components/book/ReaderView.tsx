@@ -108,6 +108,7 @@ export interface ReaderViewRef {
   getLastKnownPosition: () => EpubPosition | null;
   getVisibleSnippet: (n?: number, timeoutMs?: number) => Promise<string[] | null>;
   syncToAudio: (timestampSeconds: number, audioChapterIdx: number) => Promise<void>;
+  openMenu: () => void;
 }
 
 const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderView(
@@ -170,6 +171,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         return null;
       }
     },
+    openMenu: () => setControlsVisible(true),
     syncToAudio: async (timestampSeconds: number, audioChapterIdx: number) => {
       if (audioChapters.length === 0) return;
       try {
@@ -187,11 +189,17 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           alignment,
         );
         if (target.cfi) {
+          // Mode-handoff overrides any pending saved-CFI restore. Update the
+          // ref synchronously so the resulting POSITION_CHANGE isn't gated.
+          pendingCfiRef.current = null;
+          setPendingCfi(null);
           webViewRef.current?.goTo(target.cfi);
-        } else if (target.chapterIndex !== currentChapterIndex) {
-          // L0 only: we know the chapter but not the position within it.
-          // Only navigate if the chapter actually changed — jumping to chapter
-          // start when the reader is already mid-chapter would lose position.
+        } else if (target.chapterIndex > currentChapterIndex) {
+          // L0 only: only advance forward. If audio started at 0 (because
+          // percentComplete wasn't ready when switching modes), its chapter 0
+          // target must not pull the reader backward past where it already is.
+          pendingCfiRef.current = null;
+          setPendingCfi(null);
           webViewRef.current?.goToChapter(target.chapterIndex);
         }
       } catch (err) {
@@ -395,18 +403,14 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const handlePositionChange = useCallback(
     (position: EpubPosition, programmatic: boolean) => {
-      // While a saved-CFI restore is pending, the WebView is showing chapter-0
-      // (initial render) or whatever currentLocation reports at LOCATIONS_READY —
-      // neither is the user's actual position. Skip ALL side effects (livePositionRef,
-      // chapter UI, persist, audio sync). Otherwise beforeRemove / AppState read
-      // livePositionRef and clobber the saved CFI in AsyncStorage.
-      if (pendingCfi) {
-        if (programmatic) return; // Initial render / LOCATIONS_READY synthetic — ignore.
-        // User navigated manually during the pre-restore window. Accept this as
-        // the real position and discard the pending restore so locationsReady
-        // doesn't snap them back to the old saved CFI.
-        setPendingCfi(null);
-      }
+      // While a saved-CFI restore is pending, ALL POSITION_CHANGE events are
+      // suspect — the bridge's `programmatic` flag is a wall-clock heuristic
+      // that mis-classifies the initial chapter-0 render as user-driven on
+      // slow loads, which then clobbers the saved CFI before locationsReady
+      // can run goTo(pendingCfi). pendingCfi is only cleared by:
+      //   (1) the locationsReady effect that performs the goTo, or
+      //   (2) explicit user actions (chapter drawer, mode-handoff syncToAudio).
+      if (pendingCfiRef.current) return;
 
       livePositionRef.current = position;
       setCurrentChapterIndex(position.chapterIndex);
@@ -457,7 +461,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         }
       });
     },
-    [user, deviceId, bookId, onPositionChange, hasAudio, audioChapters, chapters.length, pendingCfi],
+    [user, deviceId, bookId, onPositionChange, hasAudio, audioChapters, chapters.length],
   );
 
   const handleFontSizeChange = useCallback((px: number) => {
@@ -496,6 +500,10 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   }, []);
 
   const handleChapterSelect = useCallback((index: number) => {
+    // Explicit user nav overrides any pending saved-CFI restore. Update the
+    // ref synchronously so the resulting POSITION_CHANGE isn't gated.
+    pendingCfiRef.current = null;
+    setPendingCfi(null);
     setCurrentChapterIndex(index);
     if (ready) {
       webViewRef.current?.goToChapter(index);
@@ -528,6 +536,10 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
     if (!locationsReady || !pendingCfi) return;
     logger.info('ReaderView: navigating to saved CFI on locationsReady', { cfi: pendingCfi });
     webViewRef.current?.goTo(pendingCfi);
+    // Clear the ref synchronously so the goTo's resulting POSITION_CHANGE
+    // (which may arrive before React commits the setPendingCfi(null) below)
+    // isn't gated and properly updates livePositionRef.
+    pendingCfiRef.current = null;
     setPendingCfi(null);
   }, [locationsReady, pendingCfi]);
 
@@ -618,13 +630,6 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           </TouchableOpacity>
         </View>
       )}
-
-      <TouchableOpacity
-        style={[styles.topTapStrip, { top: insets.top }]}
-        onPress={() => setControlsVisible(true)}
-        activeOpacity={1}
-        accessibilityLabel="Open reader options"
-      />
 
       <TopDrawerModal
         visible={controlsVisible}
@@ -718,14 +723,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   backBtnText: { color: '#fff', fontWeight: '600' },
-
-  topTapStrip: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 72,
-    zIndex: 20,
-  },
 
   progressLabel: {
     position: 'absolute',
