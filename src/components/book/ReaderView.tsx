@@ -163,7 +163,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         return null;
       }
     },
-    getLastKnownPosition: () => livePositionRef.current,
+    getLastKnownPosition: () => livePositionRef.current ?? pendingRestorePositionRef.current,
     getVisibleSnippet: async (n = 8, timeoutMs = 2000) => {
       try {
         return (await webViewRef.current?.getVisibleSnippet(n, timeoutMs)) ?? null;
@@ -374,6 +374,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           }, 1000);
         } else if (saved?.cfi) {
           logger.info('ReaderView: setting pendingCfi for restore', { cfi: saved.cfi });
+          pendingRestorePositionRef.current = saved;
           pendingCfiRef.current = saved.cfi;
           setPendingCfi(saved.cfi);
         } else {
@@ -390,6 +391,11 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const pendingCfiRef = useRef<string | null>(null);
   useEffect(() => { pendingCfiRef.current = pendingCfi; }, [pendingCfi]);
+
+  // Full saved position held during the pre-restore window so getLastKnownPosition()
+  // can return it to beforeRemove even when livePositionRef is still null (i.e., the
+  // user closed before locationsReady fired or before goTo's POSITION_CHANGE arrived).
+  const pendingRestorePositionRef = useRef<EpubPosition | null>(null);
 
   // Tracks locationsReady synchronously so handlePositionChange can gate
   // all events before the book's location index is built — covers both the
@@ -453,6 +459,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       });
 
       livePositionRef.current = position;
+      pendingRestorePositionRef.current = null; // livePositionRef now has a real position
       setCurrentChapterIndex(position.chapterIndex);
 
       if (!programmatic && hasAudio && audioChapters.length > 0) {
@@ -540,8 +547,9 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   }, []);
 
   const handleChapterSelect = useCallback((index: number) => {
-    // Explicit user nav overrides any pending saved-CFI restore. Update the
-    // ref synchronously so the resulting POSITION_CHANGE isn't gated.
+    // Explicit user nav overrides any pending saved-CFI restore. Update refs
+    // synchronously so the resulting POSITION_CHANGE isn't gated.
+    pendingRestorePositionRef.current = null;
     pendingCfiRef.current = null;
     setPendingCfi(null);
     setCurrentChapterIndex(index);
@@ -576,9 +584,10 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
     if (!locationsReady || !pendingCfi) return;
     logger.info('ReaderView: navigating to saved CFI on locationsReady', { cfi: pendingCfi });
     webViewRef.current?.goTo(pendingCfi);
-    // Clear the ref synchronously so the goTo's resulting POSITION_CHANGE
-    // (which may arrive before React commits the setPendingCfi(null) below)
-    // isn't gated and properly updates livePositionRef.
+    // Clear refs synchronously so the goTo's resulting POSITION_CHANGE isn't
+    // gated and properly updates livePositionRef. pendingRestorePositionRef is
+    // kept until livePositionRef is written (next POSITION_CHANGE after goTo)
+    // so beforeRemove can still fall back to it in the closing race.
     pendingCfiRef.current = null;
     setPendingCfi(null);
   }, [locationsReady, pendingCfi]);
