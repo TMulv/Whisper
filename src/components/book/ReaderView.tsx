@@ -330,6 +330,11 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         webViewRef.current?.setMargin(MARGIN_VALUES[margin]);
 
         const saved = await loadLocalPosition();
+        logger.info('ReaderView: loaded saved position', {
+          hasCfi: !!saved?.cfi,
+          cfi: saved?.cfi ?? '(null)',
+          chapterIndex: saved?.chapterIndex ?? -1,
+        });
 
         let audioTimestampForHandoff = audioPosition;
         if (resumeFromAudio && audioTimestampForHandoff === 0) {
@@ -368,7 +373,11 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
             else webViewRef.current?.goToChapter(target.chapterIndex);
           }, 1000);
         } else if (saved?.cfi) {
+          logger.info('ReaderView: setting pendingCfi for restore', { cfi: saved.cfi });
+          pendingCfiRef.current = saved.cfi;
           setPendingCfi(saved.cfi);
+        } else {
+          logger.info('ReaderView: no saved CFI — opening at chapter 0');
         }
       } catch (err) {
         logger.error('ReaderView: failed to load epub', err);
@@ -382,12 +391,20 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   const pendingCfiRef = useRef<string | null>(null);
   useEffect(() => { pendingCfiRef.current = pendingCfi; }, [pendingCfi]);
 
+  // Tracks locationsReady synchronously so handlePositionChange can gate
+  // all events before the book's location index is built — covers both the
+  // saved-CFI restore path (pendingCfi) and the resumeFromAudio path (no
+  // pendingCfi, but the LOCATIONS_READY synthetic chapter-0 position must
+  // not overwrite the saved CFI in AsyncStorage via livePositionRef).
+  const locationsReadyRef = useRef(false);
+  useEffect(() => { locationsReadyRef.current = locationsReady; }, [locationsReady]);
+
   useEffect(() => {
     const handleAppState = (nextState: AppStateStatus) => {
       if (nextState !== 'background' && nextState !== 'inactive') return;
-      // Skip if a saved-CFI restore is still pending — the WebView's currentLocation
-      // is transient pre-restore state, not the user's position.
-      if (pendingCfiRef.current) return;
+      // Skip if locations haven't been generated or a CFI restore is pending —
+      // livePositionRef hasn't been written with a real position yet.
+      if (!locationsReadyRef.current || pendingCfiRef.current) return;
       (async () => {
         try {
           const pos = await webViewRef.current?.getCurrentPosition();
@@ -403,14 +420,37 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const handlePositionChange = useCallback(
     (position: EpubPosition, programmatic: boolean) => {
-      // While a saved-CFI restore is pending, ALL POSITION_CHANGE events are
-      // suspect — the bridge's `programmatic` flag is a wall-clock heuristic
-      // that mis-classifies the initial chapter-0 render as user-driven on
-      // slow loads, which then clobbers the saved CFI before locationsReady
-      // can run goTo(pendingCfi). pendingCfi is only cleared by:
-      //   (1) the locationsReady effect that performs the goTo, or
-      //   (2) explicit user actions (chapter drawer, mode-handoff syncToAudio).
-      if (pendingCfiRef.current) return;
+      // Gate ALL events until locations.generate() completes. This covers:
+      //   (a) saved-CFI restore: initial chapter-0 render must not clobber
+      //       the saved CFI before locationsReady fires goTo(pendingCfi).
+      //   (b) resumeFromAudio path: LOCATIONS_READY synthetic chapter-0
+      //       position must not write to livePositionRef (and then to
+      //       AsyncStorage via beforeRemove) before the audio-derived goTo
+      //       fires. Without this gate, session 3+ silently overwrites the
+      //       saved CFI with chapter 0 whenever the user closes quickly.
+      if (!locationsReadyRef.current) {
+        logger.debug('ReaderView: POSITION_CHANGE gated (locationsReady not yet)', {
+          incoming: position.cfi,
+          programmatic,
+        });
+        return;
+      }
+      // After locationsReady, also gate while a saved-CFI restore goTo is
+      // still in-flight (pendingCfiRef cleared synchronously before goTo, so
+      // the goTo's response POSITION_CHANGE falls through correctly).
+      if (pendingCfiRef.current) {
+        logger.debug('ReaderView: POSITION_CHANGE gated (pendingCfi active)', {
+          incoming: position.cfi,
+          pendingCfi: pendingCfiRef.current,
+          programmatic,
+        });
+        return;
+      }
+      logger.debug('ReaderView: POSITION_CHANGE accepted', {
+        cfi: position.cfi,
+        chapterIndex: position.chapterIndex,
+        programmatic,
+      });
 
       livePositionRef.current = position;
       setCurrentChapterIndex(position.chapterIndex);

@@ -20,9 +20,10 @@ import {
   readerToAudio,
 } from '@/services/sync/handoff';
 import { getOrBuildLayer0 } from '@/services/sync/alignmentStore';
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer, { useProgress } from 'react-native-track-player';
 import { POSITIONS_CACHE_KEY } from '@/constants/config';
 import { logger } from '@/utils/logger';
+import { useOpportunisticAlignment } from '@/hooks/useOpportunisticAlignment';
 import ReaderView, { ReaderViewRef } from '@/components/book/ReaderView';
 import ListenView from '@/components/book/ListenView';
 import ReaderChrome, { ReaderChromeRef } from '@/components/book/ReaderChrome';
@@ -48,6 +49,20 @@ export default function BookSessionScreen() {
   const readerOpacity = useRef(new Animated.Value(params.mode === 'read' ? 1 : 0)).current;
   const listenOpacity = useRef(new Animated.Value(params.mode === 'listen' ? 1 : 0)).current;
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia' | 'eink'>('light');
+
+  // Drive on-device alignment while this session is open, prioritising the
+  // chapter the user is currently listening to so read↔listen switches feel instant.
+  const { position: audioPosition } = useProgress(5000);
+  const currentAudioChapter = audioChapters.reduce(
+    (best, ch) => (ch.startSeconds <= audioPosition ? ch : best),
+    audioChapters[0] ?? null,
+  );
+  useOpportunisticAlignment(
+    hasAudio && !!nowPlayingBook,
+    currentAudioChapter && nowPlayingBook
+      ? { bookId: nowPlayingBook.id, chapterIndex: currentAudioChapter.index }
+      : undefined,
+  );
 
   const refreshTheme = useCallback(() => {
     AsyncStorage.getItem('@whisper/theme').then((v) => {
@@ -135,6 +150,11 @@ export default function BookSessionScreen() {
     const unsub = navigation.addListener('beforeRemove', () => {
       // Epub — synchronous ref read; safe even as WebView begins unmounting.
       const epubPos = readerRef.current?.getLastKnownPosition();
+      logger.info('BookSession: beforeRemove', {
+        hasCfi: !!epubPos?.cfi,
+        cfi: epubPos?.cfi ?? '(null)',
+        chapterIndex: epubPos?.chapterIndex ?? -1,
+      });
       if (epubPos?.cfi) {
         AsyncStorage.setItem(
           `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
@@ -307,7 +327,6 @@ export default function BookSessionScreen() {
         ref={chromeRef}
         mode={mode}
         showToggle={showToggle}
-        bgColor={bgColor}
         textColor={textColor}
         onSwitchMode={handleSwitchMode}
         onClose={() => navigation.goBack()}
