@@ -17,7 +17,8 @@ type RestoreCheck = () => boolean;
 const memoryCache = new Map<string, EpubLastPosition>();
 const restoreChecks = new Map<string, RestoreCheck>();
 
-const epubKey = (bookId: string) => `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
+const epubKey = (bookId: string): string =>
+  `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
 
 export function registerRestoreCheck(
   bookId: string,
