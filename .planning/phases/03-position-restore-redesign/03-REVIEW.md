@@ -2,13 +2,20 @@
 phase: "03"
 phase_name: "position-restore-redesign"
 depth: standard
-status: issues
+status: resolved
 files_reviewed: 7
 findings:
   critical: 1
   warning: 3
   info: 2
   total: 6
+resolutions:
+  CR-01: fixed in 8f7dee9
+  WR-01: fixed in 8f7dee9
+  WR-02: fixed in 8f7dee9
+  WR-03: verified safe (no code change needed)
+  IN-01: deferred (chapter-change + AppState triggers cover loss scenarios)
+  IN-02: deferred (no regression from prior code)
 generated: 2026-04-30
 ---
 
