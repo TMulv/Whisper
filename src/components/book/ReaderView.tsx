@@ -35,7 +35,11 @@ import { getCachedPath } from '@/services/storage/localStorageService';
 import { File, Directory, Paths } from 'expo-file-system';
 import { CACHE_DIR, POSITIONS_CACHE_KEY } from '@/constants/config';
 import { EpubPosition } from '@/types/position';
-import { pushPosition } from '@/services/sync/syncEngine';
+import {
+  savePosition,
+  registerRestoreCheck,
+  type EpubLastPosition,
+} from '@/services/storage/positionStore';
 import { seekToTimestamp } from '@/services/audio/trackPlayerService';
 import { getOrBuildLayer0, ensureLayer0Fresh } from '@/services/sync/alignmentStore';
 import { readerToAudio, audioToReader } from '@/services/sync/handoff';
@@ -176,7 +180,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   const lastEpubChapterRef = useRef(-1);
   const livePositionRef = useRef<EpubPosition | null>(null);
   const [pendingCfi, setPendingCfi] = useState<string | null>(null);
-  const { position: livePosition, onPositionChange, loadLocalPosition } = useEpubPosition(bookId, user?.uid ?? null);
+  const { position: livePosition, setFromBridge, loadLocalPosition } = useEpubPosition(bookId);
 
   useImperativeHandle(ref, () => ({
     getCurrentPosition: async () => {
@@ -398,8 +402,9 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           }, 1000);
         } else if (saved?.cfi) {
           logger.info('ReaderView: setting pendingCfi for restore', { cfi: saved.cfi });
-          pendingRestorePositionRef.current = saved;
+          pendingRestorePositionRef.current = { ...saved, chapterFraction: -1 };
           pendingCfiRef.current = saved.cfi;
+          savedChapterIndexRef.current = saved.chapterIndex;
           setPendingCfi(saved.cfi);
         } else {
           logger.info('ReaderView: no saved CFI — opening at chapter 0');
@@ -429,24 +434,71 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   const locationsReadyRef = useRef(false);
   useEffect(() => { locationsReadyRef.current = locationsReady; }, [locationsReady]);
 
-  useEffect(() => {
-    const handleAppState = (nextState: AppStateStatus) => {
-      if (nextState !== 'background' && nextState !== 'inactive') return;
-      // Skip if locations haven't been generated or a CFI restore is pending —
-      // livePositionRef hasn't been written with a real position yet.
-      if (!locationsReadyRef.current || pendingCfiRef.current) return;
-      (async () => {
-        try {
-          const pos = await webViewRef.current?.getCurrentPosition();
-          if (!pos?.cfi) return;
-          const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
-          await AsyncStorage.setItem(key, JSON.stringify({ ...pos, savedAt: Date.now() }));
-        } catch { /* silent */ }
-      })();
+  // Phase 03 — saved chapter we're restoring to. Used by R7's confirmed-clear
+  // rule in handlePositionChange (clear pendingCfi only when chapterIndex
+  // reaches the saved chapter).
+  const savedChapterIndexRef = useRef<number | null>(null);
+  // Phase 03 — last chapterIndex we persisted. When the live chapter differs,
+  // the chapter-change trigger fires (D-G2).
+  const lastSavedChapterIndexRef = useRef<number | null>(null);
+  // Phase 03 — 30s in-foreground debounce timer (D-G2).
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Build an EpubLastPosition from the freshest live position. Returns null
+  // if we have nothing safe to save.
+  const buildPayload = useCallback((): EpubLastPosition | null => {
+    const live = livePositionRef.current;
+    if (!live?.cfi) return null;
+    return {
+      cfi: live.cfi,
+      chapterIndex: live.chapterIndex,
+      charOffset: live.charOffset,
+      percentComplete: live.percentComplete,
+      updatedAt: Date.now(),
     };
-    const sub = AppState.addEventListener('change', handleAppState);
-    return () => sub.remove();
+  }, []);
+
+  const persistNow = useCallback((trigger: string) => {
+    const payload = buildPayload();
+    if (!payload) return;
+    savePosition(bookId, payload, {
+      userId: user?.uid ?? null,
+      deviceId: deviceId ?? null,
+      trigger,
+    });
+  }, [bookId, user?.uid, deviceId, buildPayload]);
+
+  const scheduleDebouncedSave = useCallback(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      persistNow('debounce-30s');
+    }, 30_000);
+  }, [persistNow]);
+
+  // Register the restore-in-progress check so positionStore knows when to
+  // no-op saves (D-G3).
+  useEffect(() => {
+    registerRestoreCheck(bookId, () => pendingCfiRef.current !== null);
+    return () => registerRestoreCheck(bookId, null);
   }, [bookId]);
+
+  // Trigger 1: AppState → 'background' | 'inactive' (R2).
+  useEffect(() => {
+    const onAppState = (s: AppStateStatus) => {
+      if (s === 'background' || s === 'inactive') {
+        persistNow('appstate-background');
+      }
+    };
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => sub.remove();
+  }, [persistNow]);
+
+  // Cleanup the debounce timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, []);
 
   const handlePositionChange = useCallback(
     (position: EpubPosition, programmatic: boolean) => {
@@ -486,7 +538,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           cfi: position.cfi,
         });
         setCurrentChapterIndex(position.chapterIndex);
-        onPositionChange(position);
+        setFromBridge(position);
         return;
       }
 
@@ -499,6 +551,26 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       livePositionRef.current = position;
       pendingRestorePositionRef.current = null;
       setCurrentChapterIndex(position.chapterIndex);
+
+      // Phase 03 R7 — confirmed-clear: pendingCfi clears only when the live
+      // position confirms we've reached or passed the saved chapter. This
+      // closes CR-02 (goTo fire-and-forget could fail silently and lose the
+      // restore target) and obsoletes Phase 01's `programmatic`-flag
+      // workaround (CR-01) — `programmatic` is no longer consulted for
+      // save-gate or pendingCfi-clear decisions.
+      if (
+        pendingCfiRef.current &&
+        savedChapterIndexRef.current !== null &&
+        position.chapterIndex >= savedChapterIndexRef.current
+      ) {
+        logger.debug('ReaderView: pendingCfi cleared (chapter confirmed)', {
+          chapterIndex: position.chapterIndex,
+          savedChapter: savedChapterIndexRef.current,
+        });
+        pendingCfiRef.current = null;
+        savedChapterIndexRef.current = null;
+        setPendingCfi(null);
+      }
 
       if (!programmatic && hasAudio && audioChapters.length > 0) {
         const epubChIdx = position.chapterIndex;
@@ -526,27 +598,28 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         }
       }
 
-      onPositionChange(position, async (pos) => {
-        if (!user || !deviceId) return;
-        try {
-          const syncedPos = {
-            bookId,
-            deviceId,
-            chapterIndex: pos.chapterIndex,
-            epubCfi: pos.cfi,
-            charOffset: pos.charOffset,
-            audioTimestamp: 0,
-            percentComplete: pos.percentComplete,
-            source: 'epub' as const,
-            updatedAt: Date.now(),
-          };
-          await pushPosition(user.uid, bookId, deviceId, syncedPos);
-        } catch (err) {
-          logger.warn('Failed to push epub position', err);
-        }
-      });
+      // Phase 03 R1/R2 — single writer, three triggers. Mirror state into
+      // React (chrome consumers read `position`), then route persistence
+      // through positionStore.savePosition. Triggers fired here:
+      //   • chapter-change — fires immediately on chapter crossing (D-G2)
+      //   • debounce-30s — scheduled (or rescheduled) on every accepted event
+      // The third trigger (appstate-background) is wired in its own effect.
+      setFromBridge(position);
+      if (position.chapterIndex !== lastSavedChapterIndexRef.current) {
+        lastSavedChapterIndexRef.current = position.chapterIndex;
+        persistNow('chapter-change');
+      }
+      scheduleDebouncedSave();
     },
-    [user, deviceId, bookId, onPositionChange, hasAudio, audioChapters, chapters.length],
+    [
+      bookId,
+      setFromBridge,
+      hasAudio,
+      audioChapters,
+      chapters.length,
+      persistNow,
+      scheduleDebouncedSave,
+    ],
   );
 
   const handleFontSizeChange = useCallback((px: number) => {
@@ -622,12 +695,10 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
     if (!locationsReady || !pendingCfi) return;
     logger.info('ReaderView: navigating to saved CFI on locationsReady', { cfi: pendingCfi });
     webViewRef.current?.goTo(pendingCfi);
-    // Clear refs synchronously so the goTo's resulting POSITION_CHANGE isn't
-    // gated and properly updates livePositionRef. pendingRestorePositionRef is
-    // kept until livePositionRef is written (next POSITION_CHANGE after goTo)
-    // so beforeRemove can still fall back to it in the closing race.
-    pendingCfiRef.current = null;
-    setPendingCfi(null);
+    // Phase 03 R7 / CR-02: do NOT clear pendingCfi here. It clears only when
+    // handlePositionChange confirms the new chapterIndex >= savedChapterIndex.
+    // If goTo fails silently, pendingCfi stays set and a subsequent
+    // locationsReady cycle (e.g., orientation change) retries the restore.
   }, [locationsReady, pendingCfi]);
 
   useEffect(() => {

@@ -1,50 +1,44 @@
-import { useState, useRef, useCallback } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { EpubPosition } from '@/types/position';
-import { POSITION_WRITE_DEBOUNCE_MS, POSITIONS_CACHE_KEY } from '@/constants/config';
+import { useState, useCallback } from 'react';
+import {
+  loadPosition,
+  type EpubLastPosition,
+} from '@/services/storage/positionStore';
+import type { EpubPosition } from '@/types/position';
 import { logger } from '@/utils/logger';
 
-export function useEpubPosition(bookId: string, userId: string | null) {
-  const [position, setPosition] = useState<EpubPosition | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+/**
+ * Read-only React state holder for the current EPUB position.
+ *
+ * Phase 03: writes are routed through positionStore from ReaderView's three
+ * save triggers (AppState→background, chapter-change, 30s debounce). This
+ * hook does not write — it only mirrors bridge events into React state and
+ * loads the cold-open value.
+ *
+ * `setFromBridge` accepts the bridge's wider `EpubPosition` and projects
+ * down to the persistable `EpubLastPosition` shape.
+ */
+export function useEpubPosition(bookId: string) {
+  const [position, setPosition] = useState<EpubLastPosition | null>(null);
 
-  const onPositionChange = useCallback(
-    (newPosition: EpubPosition, onPersist?: (pos: EpubPosition) => void) => {
-      setPosition(newPosition);
+  const setFromBridge = useCallback((p: EpubPosition) => {
+    setPosition({
+      cfi: p.cfi,
+      chapterIndex: p.chapterIndex,
+      charOffset: p.charOffset,
+      percentComplete: p.percentComplete,
+      updatedAt: Date.now(),
+    });
+  }, []);
 
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(async () => {
-        // Save locally as backup. Skip if we have no CFI — that means the
-        // bridge hasn't rendered a page yet and we have nothing to restore to.
-        // percentComplete is intentionally NOT guarded here: it is 0 until
-        // locations.generate() completes (can take seconds), but the CFI is
-        // always valid the moment a page renders and is sufficient for restore.
-        if (!newPosition.cfi) return;
-        try {
-          const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
-          await AsyncStorage.setItem(key, JSON.stringify(newPosition));
-        } catch (err) {
-          logger.warn('Failed to cache epub position locally', err);
-        }
-
-        // Notify caller (useSync hook will handle Firestore write)
-        onPersist?.(newPosition);
-      }, POSITION_WRITE_DEBOUNCE_MS);
-    },
-    [bookId],
-  );
-
-  const loadLocalPosition = useCallback(async (): Promise<EpubPosition | null> => {
-    try {
-      const key = `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
-      const raw = await AsyncStorage.getItem(key);
-      const pos = raw ? (JSON.parse(raw) as EpubPosition) : null;
-      if (pos) setPosition(pos);
-      return pos;
-    } catch {
-      return null;
-    }
+  const loadLocalPosition = useCallback(async () => {
+    const loaded = await loadPosition(bookId);
+    if (loaded) setPosition(loaded);
+    logger.debug('useEpubPosition: loadLocalPosition', {
+      bookId,
+      hasValue: !!loaded,
+    });
+    return loaded;
   }, [bookId]);
 
-  return { position, onPositionChange, loadLocalPosition };
+  return { position, setFromBridge, loadLocalPosition };
 }
