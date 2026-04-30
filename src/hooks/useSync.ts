@@ -40,9 +40,9 @@ export function useSync(
       const result = resolvePosition(localPosition, remoteSynced);
 
       if (result.resolution === 'remote') {
-        // Auto-apply: caller should navigate to remote position
-        setConflict(result);
-      } else if (result.resolution === 'prompt') {
+        // Auto-apply: caller navigates to remote position. Per Phase 03 R5,
+        // resolvePosition only returns 'local' or 'remote' — the 'prompt'
+        // branch is unreachable.
         setConflict(result);
       }
       // 'local' → do nothing

@@ -1,29 +1,29 @@
 import { SyncedPosition, PositionConflict } from '@/types/position';
-import { AUTO_SYNC_THRESHOLD_MS } from '@/constants/config';
 import { writePosition, writeSyncState } from '@/services/firebase/firestoreService';
 import { FirestorePosition } from '@/types/firebase';
 
 /**
  * Resolve conflict between local and remote synced positions.
- * - remote > 5 min newer → auto-apply remote
- * - same chapter → keep local (continuity)
- * - otherwise → prompt user
+ *
+ * Rule (Phase 03 R5): keep whichever position has higher percentComplete.
+ * Tiebreaker on equal/missing percent → local (the active session's value
+ * is more reliable than a remote stub). The 'prompt' resolution path was
+ * removed — there is no UI surface for it.
  */
 export function resolvePosition(
   local: SyncedPosition,
   remote: SyncedPosition,
 ): PositionConflict {
-  const ageDiff = remote.updatedAt - local.updatedAt;
+  const remotePercent = Number.isFinite(remote.percentComplete) ? remote.percentComplete : 0;
+  const localPercent = Number.isFinite(local.percentComplete) ? local.percentComplete : 0;
 
-  if (ageDiff > AUTO_SYNC_THRESHOLD_MS) {
-    return { local, remote, resolution: 'remote' };
-  }
-
-  if (local.chapterIndex === remote.chapterIndex) {
+  if (remotePercent <= 0) {
     return { local, remote, resolution: 'local' };
   }
-
-  return { local, remote, resolution: 'prompt' };
+  if (localPercent <= 0 || remotePercent > localPercent) {
+    return { local, remote, resolution: 'remote' };
+  }
+  return { local, remote, resolution: 'local' };
 }
 
 /**
