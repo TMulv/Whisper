@@ -467,7 +467,21 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
 
   const persistNow = useCallback((trigger: string) => {
     const payload = buildPayload();
-    if (!payload) return;
+    logger.debug('persistNow called', {
+      trigger,
+      payloadExists: !!payload,
+      payloadChapter: payload?.chapterIndex,
+      pendingCfiRef: pendingCfiRef.current?.substring(0, 20),
+    });
+    if (!payload) {
+      logger.warn('persistNow: no payload to save', { trigger });
+      return;
+    }
+    logger.info('persistNow: calling savePosition', {
+      trigger,
+      chapter: payload.chapterIndex,
+      cfi: payload.cfi.substring(0, 30),
+    });
     savePosition(bookId, payload, {
       userId: user?.uid ?? null,
       deviceId: deviceId ?? null,
@@ -533,11 +547,16 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       //      the gate's exit condition is the same event that confirms
       //      the restore.
       if (pendingCfiRef.current) {
+        logger.debug('ReaderView: pendingCfiRef gate check', {
+          pendingCfiRef: pendingCfiRef.current?.substring(0, 30),
+          savedChapterIndexRef: savedChapterIndexRef.current,
+          incomingChapterIndex: position.chapterIndex,
+        });
         if (
           savedChapterIndexRef.current !== null &&
           position.chapterIndex >= savedChapterIndexRef.current
         ) {
-          logger.debug('ReaderView: pendingCfi cleared (chapter confirmed)', {
+          logger.info('ReaderView: pendingCfi cleared (chapter confirmed)', {
             chapterIndex: position.chapterIndex,
             savedChapter: savedChapterIndexRef.current,
           });
@@ -547,10 +566,12 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           // Fall through — this event is the restore landing and should
           // update livePositionRef / mirror state below.
         } else {
-          logger.debug('ReaderView: POSITION_CHANGE gated (pendingCfi active)', {
+          logger.warn('ReaderView: POSITION_CHANGE gated (pendingCfi active)', {
             incoming: position.cfi,
-            pendingCfi: pendingCfiRef.current,
+            pendingCfi: pendingCfiRef.current?.substring(0, 30),
             programmatic,
+            incomingChapter: position.chapterIndex,
+            savedChapter: savedChapterIndexRef.current,
           });
           return;
         }
@@ -570,14 +591,18 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         return;
       }
 
-      logger.debug('ReaderView: POSITION_CHANGE accepted', {
-        cfi: position.cfi,
+      logger.info('ReaderView: POSITION_CHANGE accepted - updating livePositionRef', {
+        cfi: position.cfi.substring(0, 30),
         chapterIndex: position.chapterIndex,
         programmatic,
-        pendingCfiRef: pendingCfiRef.current,
+        pendingCfiRef: pendingCfiRef.current?.substring(0, 20),
         pendingRestorePositionRef: pendingRestorePositionRef.current?.chapterIndex,
       });
 
+      logger.debug('ReaderView: setting livePositionRef', {
+        chapter: position.chapterIndex,
+        cfi: position.cfi.substring(0, 30),
+      });
       livePositionRef.current = position;
       pendingRestorePositionRef.current = null;
       setCurrentChapterIndex(position.chapterIndex);
