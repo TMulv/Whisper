@@ -29,7 +29,8 @@ import { useProgress } from 'react-native-track-player';
 import { useAuth } from '@/hooks/useAuth';
 import { useEpubPosition } from '@/hooks/useEpubPosition';
 import { useNowPlaying } from '@/context/NowPlayingContext';
-import { localListBooks } from '@/services/book/localBookStore';
+import { localListBooks, localWriteBook } from '@/services/book/localBookStore';
+import { writeBook } from '@/services/firebase/firestoreService';
 import { getCachedPath } from '@/services/storage/localStorageService';
 import { File, Directory, Paths } from 'expo-file-system';
 import { CACHE_DIR, POSITIONS_CACHE_KEY } from '@/constants/config';
@@ -61,6 +62,28 @@ async function getOrCreateDeviceId(): Promise<string> {
     await AsyncStorage.setItem(DEVICE_ID_KEY, id);
   }
   return id;
+}
+
+async function persistEpubChapterCount(
+  userId: string | undefined,
+  bookId: string,
+  count: number,
+): Promise<void> {
+  if (!userId || count <= 0) return;
+  try {
+    const books = await localListBooks(userId);
+    const found = books.find((b) => b.id === bookId);
+    if (!found || found.epubChapterCount === count) return;
+    const { id: _id, ...rest } = found;
+    void _id;
+    const updated = { ...rest, epubChapterCount: count, updatedAt: Date.now() };
+    await localWriteBook(userId, bookId, updated);
+    writeBook(userId, bookId, updated).catch((err) =>
+      logger.warn('persistEpubChapterCount: writeBook failed', err),
+    );
+  } catch (err) {
+    logger.warn('persistEpubChapterCount failed', err);
+  }
 }
 
 const cascadesInFlight = new Set<string>();
@@ -189,15 +212,16 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           alignment,
         );
         if (target.cfi) {
-          // Mode-handoff overrides any pending saved-CFI restore. Update the
-          // ref synchronously so the resulting POSITION_CHANGE isn't gated.
+          // Mode-handoff overrides any pending saved-CFI restore. Clearing
+          // pendingRestorePositionRef here ensures the goTo's POSITION_CHANGE
+          // is NOT treated as a restore-echo and correctly updates livePositionRef.
+          pendingRestorePositionRef.current = null;
           pendingCfiRef.current = null;
           setPendingCfi(null);
           webViewRef.current?.goTo(target.cfi);
         } else if (target.chapterIndex > currentChapterIndex) {
-          // L0 only: only advance forward. If audio started at 0 (because
-          // percentComplete wasn't ready when switching modes), its chapter 0
-          // target must not pull the reader backward past where it already is.
+          // L0 only: only advance forward.
+          pendingRestorePositionRef.current = null;
           pendingCfiRef.current = null;
           setPendingCfi(null);
           webViewRef.current?.goToChapter(target.chapterIndex);
@@ -452,6 +476,20 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         });
         return;
       }
+      // If pendingRestorePositionRef is still set when a programmatic event
+      // arrives, this is the restore-goTo's own POSITION_CHANGE response —
+      // don't let it overwrite livePositionRef. Without this guard, a user
+      // who navigates to a new chapter faster than the WebView bridge roundtrip
+      // would see their chapter overwritten by the restore goTo's late response.
+      if (programmatic && pendingRestorePositionRef.current !== null) {
+        logger.debug('ReaderView: POSITION_CHANGE accepted (restore-goTo echo, livePositionRef held)', {
+          cfi: position.cfi,
+        });
+        setCurrentChapterIndex(position.chapterIndex);
+        onPositionChange(position);
+        return;
+      }
+
       logger.debug('ReaderView: POSITION_CHANGE accepted', {
         cfi: position.cfi,
         chapterIndex: position.chapterIndex,
@@ -459,7 +497,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       });
 
       livePositionRef.current = position;
-      pendingRestorePositionRef.current = null; // livePositionRef now has a real position
+      pendingRestorePositionRef.current = null;
       setCurrentChapterIndex(position.chapterIndex);
 
       if (!programmatic && hasAudio && audioChapters.length > 0) {
@@ -652,6 +690,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
             ensureLayer0Fresh(bookId, audioChapters, list.length).catch(() => {});
           }
           cacheChaptersInBackground(bookId, list.length, webViewRef);
+          persistEpubChapterCount(user?.uid, bookId, list.length);
         }}
         onWordLookup={setLookupWordValue}
         onParagraphTap={handleParagraphTap}

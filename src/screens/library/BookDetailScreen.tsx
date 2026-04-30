@@ -30,11 +30,9 @@ import AIInsightsModal from '@/components/ai/AIInsightsModal';
 import EpubWebView, { EpubWebViewRef, EpubChapter } from '@/components/reader/EpubWebView';
 import type { AIPromptId } from '@/services/ai/aiPrompts';
 import TranscriptionShelf from '@/components/book/TranscriptionShelf';
-import {
-  kickoffAssemblyAiTranscription,
-  loadCachedAssemblyAiWords,
-  type TranscriptionStatus,
-} from '@/services/sync/assemblyAiAdapter';
+import { watchTranscriptionProgress } from '@/services/sync/transcriptionProgress';
+import { getAlignerQueue } from '@/services/sync/onDeviceAligner';
+import type { TranscriptionStatus } from '@/types/sync';
 import { FirestoreBook } from '@/types/firebase';
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
@@ -117,36 +115,17 @@ export default function BookDetailScreen() {
     });
   }, [user, params.bookId]);
 
-  // Track AssemblyAI transcription progress for the audiobook so we can render
-  // the shelf at the bottom of the screen. The adapter dedupes in-flight jobs
-  // and resumes from a persisted job id, so calling kickoff every mount is
-  // safe — the cached transcript path returns immediately with done=1.
+  // Drive whisper.rn alignment for this book and surface its progress in the
+  // shelf. Per-chapter, on-device, foreground-only — `enqueueAllPending`
+  // dedupes against existing entries, so calling on every mount is safe.
+  // The aggregator polls `BookAlignment.l1Anchors` to compute fraction.
   useEffect(() => {
     if (!user || !book) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const ext = (book.audioPath?.split('.').pop() ?? 'm4b').toLowerCase();
-        const audioUri = await getCachedPath(params.bookId, 'audio', ext);
-        if (!audioUri) return;
-        const cached = await loadCachedAssemblyAiWords(audioUri);
-        if (cancelled) return;
-        if (cached && cached.length > 0) {
-          // Already done — don't render the shelf.
-          setTxStatus({ fraction: 1, phase: 'done', etaSeconds: 0 });
-          return;
-        }
-        // Starts (or resumes) the background job and streams status updates.
-        kickoffAssemblyAiTranscription(
-          audioUri,
-          (s) => { if (!cancelled) setTxStatus(s); },
-          book.totalDurationSeconds,
-        );
-      } catch (err) {
-        logger.warn('BookDetail: failed to track transcription', err);
-      }
-    })();
-    return () => { cancelled = true; };
+    getAlignerQueue()?.enqueueAllPending(params.bookId).catch(() => {});
+    const unsubscribe = watchTranscriptionProgress(params.bookId, (s) => {
+      setTxStatus(s);
+    });
+    return unsubscribe;
   }, [user, book, params.bookId]);
 
   const applyChapterResult = async (result: NonNullable<Awaited<ReturnType<typeof lookupChapters>>>) => {
@@ -388,9 +367,17 @@ export default function BookDetailScreen() {
     );
   }
 
-  const epubExt = (book.epubPath.split('.').pop() ?? 'epub').toUpperCase();
-  const audioExt = (book.audioPath.split('.').pop() ?? 'm4b').toUpperCase();
+  const epubExt = ((book.epubPath ?? '').split('.').pop() || 'epub').toUpperCase();
+  const audioExt = ((book.audioPath ?? '').split('.').pop() || 'm4b').toUpperCase();
   const display = getBookDisplay(book);
+  // Prefer the live spine length from the hidden EPUB once it has loaded;
+  // otherwise fall back to the value persisted on the book from a prior open.
+  // Bracket-notation access avoids a Hermes inline-cache miss on legacy books
+  // that were stored before `epubChapterCount` was added to the schema.
+  const epubChapterCount: number =
+    hiddenEpubChapters.length ||
+    ((book as Record<string, unknown>)['epubChapterCount'] as number | undefined) ||
+    0;
 
   return (
     <View style={styles.screen}>
@@ -425,8 +412,9 @@ export default function BookDetailScreen() {
           {display.author ? <Text style={styles.author}>{display.author}</Text> : null}
 
           <Text style={styles.heroMeta}>
-            {book.totalChapters} chapters
-            {book.totalDurationSeconds > 0 ? `  ·  ${formatDuration(book.totalDurationSeconds)}` : ''}
+            {epubChapterCount > 0 ? `${epubChapterCount} ${epubChapterCount === 1 ? 'chapter' : 'chapters'}` : ''}
+            {epubChapterCount > 0 && book.totalDurationSeconds > 0 ? '  ·  ' : ''}
+            {book.totalDurationSeconds > 0 ? formatDuration(book.totalDurationSeconds) : ''}
           </Text>
         </Animated.View>
 
@@ -439,7 +427,9 @@ export default function BookDetailScreen() {
               </View>
               <Text style={styles.fileHalfLabel}>TEXT</Text>
               <Text style={[styles.fileHalfFormat, { color: C.bookAccent }]}>{epubExt}</Text>
-              <Text style={styles.fileHalfMeta}>{book.totalChapters} chapters</Text>
+              <Text style={styles.fileHalfMeta}>
+                {epubChapterCount > 0 ? `${epubChapterCount} ${epubChapterCount === 1 ? 'chapter' : 'chapters'}` : '—'}
+              </Text>
             </View>
 
             <View style={styles.spineVisual}>
@@ -488,7 +478,7 @@ export default function BookDetailScreen() {
             <Text style={styles.sectionLabel}>AI SUMMARY</Text>
             <Text style={styles.sectionBody}>
               {currentChapterIndex > 0
-                ? `You're on chapter ${currentChapterIndex + 1}${book.totalChapters ? ` of ${book.totalChapters}` : ''}. Let Claude catch you up or preview what's next.`
+                ? `You're on chapter ${currentChapterIndex + 1}${epubChapterCount > currentChapterIndex + 1 ? ` of ${epubChapterCount}` : ''}. Let Claude catch you up or preview what's next.`
                 : `Start reading, then come back — Claude can recap where you are, summarize the story so far, or preview what's ahead.`}
             </Text>
             <AIOption
@@ -579,7 +569,16 @@ export default function BookDetailScreen() {
           <EpubWebView
             ref={hiddenEpubRef}
             onReady={() => { hiddenEpubReadyRef.current = true; }}
-            onChapterList={setHiddenEpubChapters}
+            onChapterList={(list) => {
+              setHiddenEpubChapters(list);
+              const storedCount = book ? (book as Record<string, unknown>)['epubChapterCount'] as number | undefined : undefined;
+              if (user && book && list.length > 0 && storedCount !== list.length) {
+                const updated = { ...book, epubChapterCount: list.length, updatedAt: Date.now() };
+                setBook(updated);
+                localWriteBook(user.uid, params.bookId, updated).catch(() => {});
+                writeBook(user.uid, params.bookId, updated).catch(() => {});
+              }
+            }}
             onError={(msg) => logger.warn('Hidden EpubWebView error', msg)}
           />
         </View>
