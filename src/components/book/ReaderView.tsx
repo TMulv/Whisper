@@ -444,6 +444,13 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   // Phase 03 — 30s in-foreground debounce timer (D-G2).
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Phase 03 / WR-02 — reset per-book refs when the bookId changes so that
+  // crossing books doesn't carry stale chapter indices into the new session.
+  useEffect(() => {
+    savedChapterIndexRef.current = null;
+    lastSavedChapterIndexRef.current = null;
+  }, [bookId]);
+
   // Build an EpubLastPosition from the freshest live position. Returns null
   // if we have nothing safe to save.
   const buildPayload = useCallback((): EpubLastPosition | null => {
@@ -517,16 +524,36 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         });
         return;
       }
-      // After locationsReady, also gate while a saved-CFI restore goTo is
-      // still in-flight (pendingCfiRef cleared synchronously before goTo, so
-      // the goTo's response POSITION_CHANGE falls through correctly).
+      // After locationsReady, the pendingCfiRef gate has two roles:
+      //   1. Drop transient initial-render / LOCATIONS_READY events that
+      //      arrive at a chapter < savedChapterIndex (pre-restore noise).
+      //   2. Recognize the restore-goTo's own response (chapter ≥ saved)
+      //      and clear pendingCfi — the R7 confirmed-clear (closes CR-02
+      //      from Phase 01's review). This MUST live inside the gate so
+      //      the gate's exit condition is the same event that confirms
+      //      the restore.
       if (pendingCfiRef.current) {
-        logger.debug('ReaderView: POSITION_CHANGE gated (pendingCfi active)', {
-          incoming: position.cfi,
-          pendingCfi: pendingCfiRef.current,
-          programmatic,
-        });
-        return;
+        if (
+          savedChapterIndexRef.current !== null &&
+          position.chapterIndex >= savedChapterIndexRef.current
+        ) {
+          logger.debug('ReaderView: pendingCfi cleared (chapter confirmed)', {
+            chapterIndex: position.chapterIndex,
+            savedChapter: savedChapterIndexRef.current,
+          });
+          pendingCfiRef.current = null;
+          savedChapterIndexRef.current = null;
+          setPendingCfi(null);
+          // Fall through — this event is the restore landing and should
+          // update livePositionRef / mirror state below.
+        } else {
+          logger.debug('ReaderView: POSITION_CHANGE gated (pendingCfi active)', {
+            incoming: position.cfi,
+            pendingCfi: pendingCfiRef.current,
+            programmatic,
+          });
+          return;
+        }
       }
       // If pendingRestorePositionRef is still set when a programmatic event
       // arrives, this is the restore-goTo's own POSITION_CHANGE response —
@@ -551,26 +578,6 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       livePositionRef.current = position;
       pendingRestorePositionRef.current = null;
       setCurrentChapterIndex(position.chapterIndex);
-
-      // Phase 03 R7 — confirmed-clear: pendingCfi clears only when the live
-      // position confirms we've reached or passed the saved chapter. This
-      // closes CR-02 (goTo fire-and-forget could fail silently and lose the
-      // restore target) and obsoletes Phase 01's `programmatic`-flag
-      // workaround (CR-01) — `programmatic` is no longer consulted for
-      // save-gate or pendingCfi-clear decisions.
-      if (
-        pendingCfiRef.current &&
-        savedChapterIndexRef.current !== null &&
-        position.chapterIndex >= savedChapterIndexRef.current
-      ) {
-        logger.debug('ReaderView: pendingCfi cleared (chapter confirmed)', {
-          chapterIndex: position.chapterIndex,
-          savedChapter: savedChapterIndexRef.current,
-        });
-        pendingCfiRef.current = null;
-        savedChapterIndexRef.current = null;
-        setPendingCfi(null);
-      }
 
       if (!programmatic && hasAudio && audioChapters.length > 0) {
         const epubChIdx = position.chapterIndex;

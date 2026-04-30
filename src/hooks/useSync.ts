@@ -3,6 +3,7 @@ import { AppState, AppStateStatus } from 'react-native';
 import { SyncedPosition, PositionConflict } from '@/types/position';
 import { readSyncState } from '@/services/firebase/firestoreService';
 import { resolvePosition } from '@/services/sync/syncEngine';
+import { setCachedPosition } from '@/services/storage/positionStore';
 import { FirestorePosition } from '@/types/firebase';
 import { logger } from '@/utils/logger';
 
@@ -43,6 +44,16 @@ export function useSync(
         // Auto-apply: caller navigates to remote position. Per Phase 03 R5,
         // resolvePosition only returns 'local' or 'remote' — the 'prompt'
         // branch is unreachable.
+        // D-G3 / WR-01: keep positionStore's in-memory cache consistent with
+        // the navigation that's about to happen, so a subsequent
+        // loadPosition returns the remote value, not the now-stale local.
+        setCachedPosition(bookId, {
+          cfi: remoteSynced.epubCfi,
+          chapterIndex: remoteSynced.chapterIndex,
+          charOffset: remoteSynced.charOffset,
+          percentComplete: remoteSynced.percentComplete,
+          updatedAt: remoteSynced.updatedAt,
+        });
         setConflict(result);
       }
       // 'local' → do nothing
