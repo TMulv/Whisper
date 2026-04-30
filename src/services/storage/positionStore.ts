@@ -34,10 +34,13 @@ export function savePosition(
   opts: { userId?: string | null; deviceId?: string | null; trigger: string },
 ): void {
   const check = restoreChecks.get(bookId);
-  if (check && check()) {
-    logger.debug('positionStore: save skipped (restore in progress)', {
+  const restoreInProgress = check && check();
+  if (restoreInProgress) {
+    logger.warn('positionStore: save skipped (restore in progress)', {
       bookId,
       trigger: opts.trigger,
+      chapterIndex: pos.chapterIndex,
+      restoreCheckPresent: !!check,
     });
     return;
   }

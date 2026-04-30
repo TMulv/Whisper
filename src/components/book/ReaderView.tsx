@@ -566,6 +566,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         });
         setCurrentChapterIndex(position.chapterIndex);
         setFromBridge(position);
+        pendingRestorePositionRef.current = null;
         return;
       }
 
@@ -573,6 +574,8 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         cfi: position.cfi,
         chapterIndex: position.chapterIndex,
         programmatic,
+        pendingCfiRef: pendingCfiRef.current,
+        pendingRestorePositionRef: pendingRestorePositionRef.current?.chapterIndex,
       });
 
       livePositionRef.current = position;
@@ -612,8 +615,16 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       //   • debounce-30s — scheduled (or rescheduled) on every accepted event
       // The third trigger (appstate-background) is wired in its own effect.
       setFromBridge(position);
+      logger.debug('ReaderView: trigger check', {
+        chapterIndex: position.chapterIndex,
+        lastSavedChapterIndexRef: lastSavedChapterIndexRef.current,
+        willFireChapterChange: position.chapterIndex !== lastSavedChapterIndexRef.current,
+      });
       if (position.chapterIndex !== lastSavedChapterIndexRef.current) {
         lastSavedChapterIndexRef.current = position.chapterIndex;
+        logger.debug('ReaderView: chapter-change trigger firing', {
+          newChapter: position.chapterIndex,
+        });
         persistNow('chapter-change');
       }
       scheduleDebouncedSave();
