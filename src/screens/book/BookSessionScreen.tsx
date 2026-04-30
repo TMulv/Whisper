@@ -148,19 +148,16 @@ export default function BookSessionScreen() {
 
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', () => {
-      // Epub — synchronous ref read; safe even as WebView begins unmounting.
+      // Phase 03 R3 — beforeRemove no longer writes the EPUB position.
+      // ReaderView's three save triggers (AppState→background, chapter-change,
+      // 30s debounce) cover this case. The AppState→background trigger
+      // fires within milliseconds of unmount, structurally replacing the
+      // beforeRemove write. We log the last-known position for diagnostics
+      // only.
       const epubPos = readerRef.current?.getLastKnownPosition();
-      logger.info('BookSession: beforeRemove', {
+      logger.info('BookSession: beforeRemove (epub no-op)', {
         hasCfi: !!epubPos?.cfi,
-        cfi: epubPos?.cfi ?? '(null)',
-        chapterIndex: epubPos?.chapterIndex ?? -1,
       });
-      if (epubPos?.cfi) {
-        AsyncStorage.setItem(
-          `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
-          JSON.stringify({ ...epubPos, savedAt: Date.now() }),
-        ).catch(() => {});
-      }
 
       // Audio — fire-and-forget; TrackPlayer is an app-level singleton and
       // stays alive after this screen unmounts, so the async call is safe.
@@ -217,17 +214,11 @@ export default function BookSessionScreen() {
       }
       setSwitching(true);
       try {
-        // Flush the last known reader position synchronously before any async
-        // work so the AsyncStorage fallback inside prepareBookForPlayback is
-        // fresh even if the 2 s debounce hasn't fired yet.
-        const snapPos = readerRef.current?.getLastKnownPosition();
-        if (snapPos?.cfi) {
-          AsyncStorage.setItem(
-            `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
-            JSON.stringify({ ...snapPos, savedAt: Date.now() }),
-          ).catch(() => {});
-        }
-
+        // Phase 03 R3 — the snap-flush epub save is removed. Position is
+        // kept fresh by the chapter-change + 30s-debounce triggers in
+        // ReaderView, so prepareBookForPlayback's AsyncStorage fallback is
+        // at most 30s stale. The audio handoff below uses the in-memory
+        // livePos / getLastKnownPosition path, not AsyncStorage.
         const livePos = await readerRef.current?.getCurrentPosition();
         // Fall back to the synchronous ref when the async bridge returns empty
         // (common before epub.js locations.generate() finishes).
