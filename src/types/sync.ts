@@ -81,3 +81,10 @@ export interface M4BChapter {
   endSeconds: number;
 }
 
+// ── Transcription progress (AAI/aligner refactor — stashed) ────
+// Placeholder type for transcriptionProgress module.
+// Remove this when the AAI refactor is restored from stash.
+export type TranscriptionStatus = {
+  progress?: number;
+  status?: string;
+};

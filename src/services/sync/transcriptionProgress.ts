@@ -1,9 +1,5 @@
 import { logger } from '@/utils/logger';
-
-export type TranscriptionStatus = {
-  progress?: number;
-  status?: string;
-};
+import type { TranscriptionStatus } from '@/types/sync';
 
 export function watchTranscriptionProgress(
   bookId: string,
