@@ -86,6 +86,21 @@ target 'Whisper' do
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
 
+    # Expo 55 references RCTDevMenuConfiguration in EXReactRootViewFactory.h
+    # but this type was added in React Native 0.83.x and the project uses 0.81.x.
+    # Patch the header to add a forward declaration so the compiler is satisfied
+    # (the parameter is only ever passed as a nullable pointer — no definition needed).
+    expo_header = File.join(__dir__, '..', 'node_modules', 'expo', 'ios', 'AppDelegates', 'EXReactRootViewFactory.h')
+    if File.exist?(expo_header)
+      content = File.read(expo_header)
+      forward_decl = "@class RCTDevMenuConfiguration;\n"
+      unless content.include?(forward_decl.strip)
+        patched = content.sub(/^NS_ASSUME_NONNULL_BEGIN/, "#{forward_decl}NS_ASSUME_NONNULL_BEGIN")
+        File.write(expo_header, patched)
+        puts "[Whisper] Patched EXReactRootViewFactory.h: added RCTDevMenuConfiguration forward declaration"
+      end
+    end
+
     # CocoaPods adds headers from every xcframework slice to the Headers build
     # phase of the whisper-rn target, including the device slice AND the
     # simulator slice. Both slices contain identical headers so Xcode reports
