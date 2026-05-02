@@ -115,6 +115,39 @@ target 'Whisper' do
       end
     end
 
+    # Patch 3: ObjC header — collapse #if iOS/tvOS branch to single signature (no devMenuConfiguration).
+    expo_h = File.join(__dir__, '..', 'node_modules', 'expo', 'ios', 'AppDelegates', 'EXReactRootViewFactory.h')
+    if File.exist?(expo_h)
+      content = File.read(expo_h)
+      patched = content.gsub(
+        /#if TARGET_OS_IOS \|\| TARGET_OS_TV\n- \(UIView \*\)superViewWithModuleName:.*?devMenuConfiguration:\(nullable RCTDevMenuConfiguration \*\)devMenuConfiguration;\n#else\n(- \(UIView \*\)superViewWithModuleName:.*?launchOptions:\(nullable NSDictionary \*\)launchOptions;)\n#endif/m,
+        '\1'
+      )
+      if patched != content
+        File.write(expo_h, patched)
+        puts "[Whisper] Patched EXReactRootViewFactory.h: collapsed superViewWithModuleName signature (RN 0.81 compat)"
+      end
+    end
+
+    # Patch 4: ObjC implementation — drop devMenuConfiguration from viewWithModuleName and superViewWithModuleName,
+    # remove RCTDevMenu.h import (doesn't exist in RN 0.81).
+    expo_mm = File.join(__dir__, '..', 'node_modules', 'expo', 'ios', 'AppDelegates', 'EXReactRootViewFactory.mm')
+    if File.exist?(expo_mm)
+      content = File.read(expo_mm)
+      if content.include?('devMenuConfiguration')
+        patched = content
+          .gsub("#import <React/RCTDevMenu.h>\n", '')
+          .gsub(/\s*devMenuConfiguration:\(RCTDevMenuConfiguration \*\)devMenuConfiguration\n/, "\n")
+          .gsub(/\s*devMenuConfiguration:\(nullable RCTDevMenuConfiguration \*\)devMenuConfiguration\n/, "\n")
+          .gsub(/\s*devMenuConfiguration:devMenuConfiguration/, '')
+          .gsub(/if \(devMenuConfiguration == nil\) \{.*?\}\s*\n\n/m, '')
+          .gsub(/#if TARGET_OS_IOS \|\| TARGET_OS_TV\n/, '')
+          .gsub(/#else\n- \(UIView \*\)viewWithModuleName:.*?return \[super viewWithModuleName:moduleName initialProperties:initialProperties launchOptions:launchOptions\];\n\}\n\n- \(UIView \*\)superViewWithModuleName:.*?return \[super viewWithModuleName:moduleName initialProperties:initialProperties launchOptions:launchOptions\];\n\}\n#endif/m, '')
+        File.write(expo_mm, patched)
+        puts "[Whisper] Patched EXReactRootViewFactory.mm: removed devMenuConfiguration (RN 0.81 compat)"
+      end
+    end
+
     # CocoaPods adds headers from every xcframework slice to the Headers build
     # phase of the whisper-rn target, including the device slice AND the
     # simulator slice. Both slices contain identical headers so Xcode reports
