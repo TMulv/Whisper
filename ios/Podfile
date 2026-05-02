@@ -86,10 +86,10 @@ target 'Whisper' do
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
 
-    # Expo 55 references RCTDevMenuConfiguration in EXReactRootViewFactory.h
-    # but this type was added in React Native 0.83.x and the project uses 0.81.x.
-    # Patch the header to add a forward declaration so the compiler is satisfied
-    # (the parameter is only ever passed as a nullable pointer — no definition needed).
+    # Expo 55 was built against React Native 0.83.x which added RCTDevMenuConfiguration.
+    # The project uses RN 0.81.x which doesn't have this type. Two patches needed:
+    #
+    # Patch 1: ObjC header — forward-declare the class (pointer use only, no definition needed).
     expo_header = File.join(__dir__, '..', 'node_modules', 'expo', 'ios', 'AppDelegates', 'EXReactRootViewFactory.h')
     if File.exist?(expo_header)
       content = File.read(expo_header)
@@ -98,6 +98,20 @@ target 'Whisper' do
         patched = content.sub(/^NS_ASSUME_NONNULL_BEGIN/, "#{forward_decl}NS_ASSUME_NONNULL_BEGIN")
         File.write(expo_header, patched)
         puts "[Whisper] Patched EXReactRootViewFactory.h: added RCTDevMenuConfiguration forward declaration"
+      end
+    end
+
+    # Patch 2: Swift file — strip devMenuConfiguration arg from two call sites.
+    # RN 0.81.x's RCTRootViewFactory doesn't expose this property or accept
+    # the parameter; passing nil/omitting it is safe (dev menu not used in prod).
+    expo_swift = File.join(__dir__, '..', 'node_modules', 'expo', 'ios', 'AppDelegates', 'ExpoReactNativeFactory.swift')
+    if File.exist?(expo_swift)
+      content = File.read(expo_swift)
+      patched = content
+        .gsub(/,\s*\n\s*devMenuConfiguration:\s*self\.devMenuConfiguration/, '')
+      if patched != content
+        File.write(expo_swift, patched)
+        puts "[Whisper] Patched ExpoReactNativeFactory.swift: removed devMenuConfiguration calls (RN 0.81 compat)"
       end
     end
 
