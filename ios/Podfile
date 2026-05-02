@@ -2,12 +2,37 @@ require File.join(File.dirname(`node --print "require.resolve('expo/package.json
 require File.join(File.dirname(`node --print "require.resolve('react-native/package.json')"`), "scripts/react_native_pods")
 
 require 'json'
+require 'fileutils'
 podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties.json'))) rescue {}
+
+# whisper.rn 0.5.5 ships an xcframework with both iOS and tvOS slices.
+# When building for the iOS simulator, Xcode copies headers from ALL slices
+# into the same output directory, producing "Multiple commands produce" errors.
+# Strip the tvOS slices once at install time — they are never needed here.
+xcfw = File.join(__dir__, '..', 'node_modules', 'whisper.rn', 'ios', 'rnwhisper.xcframework')
+['tvos-arm64', 'tvos-arm64_x86_64-simulator'].each do |slice|
+  path = File.join(xcfw, slice)
+  if File.directory?(path)
+    FileUtils.rm_rf(path)
+    puts "[Whisper] Removed tvOS xcframework slice: #{slice}"
+  end
+end
+info_plist = File.join(xcfw, 'Info.plist')
+if File.exist?(info_plist)
+  content = File.read(info_plist)
+  # Remove every <dict>…</dict> entry whose LibraryIdentifier starts with "tvos"
+  content = content.gsub(
+    /\s*<dict>\s*<key>LibraryIdentifier<\/key>\s*<string>tvos-[^<]*<\/string>.*?<\/dict>/m,
+    ''
+  )
+  File.write(info_plist, content)
+  puts "[Whisper] Removed tvOS entries from xcframework Info.plist"
+end
 
 def ccache_enabled?(podfile_properties)
   # Environment variable takes precedence
   return ENV['USE_CCACHE'] == '1' if ENV['USE_CCACHE']
-  
+
   # Fall back to Podfile properties
   podfile_properties['apple.ccacheEnabled'] == 'true'
 end
@@ -19,6 +44,8 @@ ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1' if podfile_properties['ios.buildReactNati
 platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 
 prepare_react_native_project!
+
+$RNFirebaseAsStaticFramework = true
 
 target 'Whisper' do
   use_expo_modules!
@@ -41,8 +68,7 @@ target 'Whisper' do
 
   config = use_native_modules!(config_command)
 
-  use_frameworks! :linkage => podfile_properties['ios.useFrameworks'].to_sym if podfile_properties['ios.useFrameworks']
-  use_frameworks! :linkage => ENV['USE_FRAMEWORKS'].to_sym if ENV['USE_FRAMEWORKS']
+  use_frameworks! :linkage => :static
 
   use_react_native!(
     :path => config[:reactNativePath],
@@ -59,5 +85,73 @@ target 'Whisper' do
       :mac_catalyst_enabled => false,
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
+
+    # CocoaPods adds headers from every xcframework slice to the Headers build
+    # phase of the whisper-rn target, including the device slice AND the
+    # simulator slice. Both slices contain identical headers so Xcode reports
+    # "Multiple commands produce" for every header. Remove the duplicates.
+    installer.pods_project.targets.each do |target|
+      next unless target.name == 'whisper-rn'
+      target.build_phases.each do |phase|
+        next unless phase.is_a?(Xcodeproj::Project::Object::PBXHeadersBuildPhase)
+        seen = {}
+        to_remove = []
+        phase.files.each do |build_file|
+          name = build_file.file_ref&.path
+          if seen[name]
+            to_remove << build_file
+          else
+            seen[name] = true
+          end
+        end
+        to_remove.each { |f| phase.remove_build_file(f) }
+        puts "[Whisper] Deduplicated #{to_remove.size} headers in whisper-rn Headers phase" unless to_remove.empty?
+      end
+    end
+    # fmt 11.x uses consteval format-string checking (FMT_USE_CONSTEVAL=1) on
+    # Apple Clang >= 14000029. Apple Clang 21 (Xcode 26.4.x, build version
+    # ~21000099) introduced stricter consteval enforcement that rejects valid
+    # fmt usage with "call to consteval function is not a constant expression".
+    # fmt's guard only covers clang < 14000029; 21000099 slips through.
+    # Patch the header directly — a preprocessor define won't work because the
+    # header uses unconditional #define (no #ifndef guard), overriding -D flags.
+    fmt_base_h = 'Pods/fmt/include/fmt/base.h'
+    if File.exist?(fmt_base_h)
+      content = File.read(fmt_base_h)
+      patched = content.gsub(
+        /__apple_build_version__ < 14000029L/,
+        '(__apple_build_version__ < 14000029L || __apple_build_version__ >= 21000000L)'
+      )
+      if patched != content
+        FileUtils.chmod(0644, fmt_base_h)
+        File.write(fmt_base_h, patched)
+        puts '[Whisper] Patched fmt/base.h: disabled consteval for Apple Clang >= 21'
+      end
+    end
+
+    installer.pods_project.save
+
+    # RNFB pods include React headers (non-modular) inside framework modules.
+    # Allow non-modular includes and suppress the related warning for all RNFB targets.
+    installer.pods_project.targets.each do |target|
+      if target.name.start_with?('RNFB')
+        target.build_configurations.each do |config|
+          config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
+          config.build_settings['CLANG_WARN_NON_MODULAR_INCLUDE_IN_FRAMEWORK_MODULE'] = 'NO'
+        end
+      end
+    end
+
+    # Remove React-importing headers from the RNFBApp umbrella so they are not
+    # re-exported as part of the module (prevents "must import from RNFBApp.X" errors).
+    rnfb_umbrella = 'Pods/Target Support Files/RNFBApp/RNFBApp-umbrella.h'
+    if File.exist?(rnfb_umbrella)
+      content = File.read(rnfb_umbrella)
+      %w[RNFBAppModule.h RCTConvert+FIRApp.h RCTConvert+FIROptions.h
+         RNFBRCTEventEmitter.h RNFBSharedUtils.h RNFBUtilsModule.h].each do |header|
+        content = content.gsub("#import \"#{header}\"", "// #import \"#{header}\" (excluded: React import in framework module)")
+      end
+      File.write(rnfb_umbrella, content)
+    end
   end
 end
