@@ -187,6 +187,77 @@ Or in Xcode: **Window** → **Devices and Simulators** → select simulator → 
 - **Expected:** Chapter 5 appears  
 - **Bug symptom:** Chapter 0 appears instead
 
+---
+
+## Dead Ends & Why They Didn't Work
+
+### Approach 1: Bridge timing heuristic (CR-01, Phase 01)
+
+**What we tried:** Use a 1000ms wall-clock heuristic in `epubBridgeHtml.ts:172` as a gate to prevent saves during restore — wait 1 second after restore starts before allowing saves.
+
+**Why it failed:**
+- Unreliable on slow devices (restore takes >1s)
+- Unreliable on fast devices (user might navigate before 1s elapses)
+- Race condition: if user navigates while timer is running, both events race
+- Creates artificial UI blocking for no benefit
+
+**Why we moved on:** The confirmed-clear logic (Fix 3) is deterministic — it clears when the WebView confirms the restore landed, not on a timer guess.
+
+---
+
+### Approach 2: Multiple writer pattern
+
+**What we tried:** Allow multiple code paths to write position (AppState handler, beforeRemove, chapter-change, etc.) with debouncing to prevent thrashing.
+
+**Why it failed:**
+- Impossible to reason about which write wins
+- Race conditions between device sync and local saves
+- Debounce timing assumptions break on slow devices
+- Created the 4+ fix commits in Phase 01 (stuck loop)
+
+**Why we moved on:** Phase 03 redesigned to single-writer (positionStore.savePosition) with explicit triggers. All saves route through one function, making the control flow traceable.
+
+---
+
+### Approach 3: Clear pendingCfi in the goTo effect
+
+**What we tried:** Clear `pendingCfi` immediately after calling `goTo()` in the effect at line 709.
+
+**Why it failed:**
+- goTo is async — the response arrives later
+- Clearing immediately means the restore gate would be closed by the time the response arrives
+- If goTo fails silently, pendingCfi is cleared but the restore never lands
+- User is left at chapter 0 thinking they're restored (they're not)
+
+**Why we moved on:** By design, pendingCfi only clears when the response confirms (`position.chapterIndex >= savedChapterIndex`). This ensures we know the restore actually landed before closing the gate.
+
+---
+
+### Approach 4: Use restoreCheck to block ALL saves during restore
+
+**What we tried:** Gate ALL saves (not just during programmatic events) while `pendingCfiRef.current !== null`.
+
+**Why it failed:**
+- Too aggressive — blocks valid chapter-change saves after programmatic navigation
+- Restore can take several seconds on slow devices
+- User navigates during restore → event is gated even though it's user-driven, not part of restore
+
+**Why we moved on:** The gate only blocks during the narrow window where `programmatic && pendingRestorePositionRef !== null`. This targets the specific race condition (restore-goTo response arriving after user navigation) without over-blocking.
+
+---
+
+## Why This Matters
+
+These dead ends taught us:
+1. **Timer-based gates don't work** — use deterministic state (pendingCfi confirmed)
+2. **Multiple writers are unmanageable** — single writer (savePosition) is traceable
+3. **Async operations need response confirmation** — don't clear flags until you know the operation landed
+4. **Gates must be narrow** — block only the specific race, not all saves
+
+The current design (Fix 3) is the result of learning from these failures. It's deterministic, traceable, and handles the race condition without artificial delays.
+
+---
+
 ## Next Steps
 
 1. User tests Fix 3 by reproducing the scenario
