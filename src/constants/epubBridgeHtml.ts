@@ -347,7 +347,35 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
       },
       _nextPage: function(){if(_rendition)_rendition.next();},
-      _prevPage: function(){if(_rendition)_rendition.prev();}
+      _prevPage: function(){if(_rendition)_rendition.prev();},
+      search: async function(query, requestId) {
+        try {
+          var q = (query || '').trim();
+          if (!q) {
+            postToRN({type:'SEARCH_RESULTS',requestId:requestId,results:[],done:true});
+            return;
+          }
+          var qLower = q.toLowerCase();
+          var spineItems = _book.spine.spineItems;
+          for (var si = 0; si < spineItems.length; si++) {
+            var item = spineItems[si];
+            await item.load(_book.load.bind(_book));
+            var raw = item.find(qLower);
+            item.unload();
+            if (raw && raw.length > 0) {
+              var chapterEntry = _chapters[item.index] || {};
+              var chapterTitle = chapterEntry.title || ('Chapter ' + (item.index + 1));
+              var mapped = raw.map(function(r) {
+                return {cfi: r.cfi, excerpt: r.excerpt, chapterIndex: item.index, chapterTitle: chapterTitle};
+              });
+              postToRN({type:'SEARCH_RESULTS',requestId:requestId,results:mapped,done:false});
+            }
+          }
+          postToRN({type:'SEARCH_RESULTS',requestId:requestId,results:[],done:true});
+        } catch(e) {
+          postToRN({type:'SEARCH_ERROR',requestId:requestId,error:e.message||String(e)});
+        }
+      }
     };
 
     // Forward unhandled JS errors to React Native.

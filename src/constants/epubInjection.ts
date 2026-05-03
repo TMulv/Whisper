@@ -31,3 +31,6 @@ export const JS_SET_LINE_HEIGHT = (value: number) =>
 
 export const JS_GENERATE_LOCATIONS =
   `window.whisper.generateLocations(); true;`;
+
+export const JS_SEARCH = (query: string, requestId: string): string =>
+  `window.whisper.search(${JSON.stringify(query)}, ${JSON.stringify(requestId)});`;

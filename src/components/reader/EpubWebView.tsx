@@ -19,11 +19,13 @@ import {
   JS_SET_FONT_FAMILY,
   JS_SET_MARGIN,
   JS_SET_LINE_HEIGHT,
+  JS_SEARCH,
 } from '@/constants/epubInjection';
 import { EPUB_BRIDGE_HTML } from '@/constants/epubBridgeHtml';
 import { EpubPosition } from '@/types/position';
 import { Highlight } from '@/types/highlight';
 import { logger } from '@/utils/logger';
+import type { SearchResult } from '@/components/reader/EpubSearchDrawer';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,7 @@ export interface EpubWebViewRef {
   addHighlight: (id: string, cfiRange: string, color: string) => void;
   removeHighlight: (id: string) => void;
   loadHighlights: (highlights: Pick<Highlight, 'id' | 'cfiRange' | 'color'>[]) => void;
+  search: (query: string, requestId: string) => void;
 }
 
 interface Props {
@@ -64,6 +67,8 @@ interface Props {
   onParagraphTap?: (percentComplete: number, chapterIndex: number) => void;
   onTextSelected?: (cfiRange: string, text: string, chapterIndex: number) => void;
   onError?: (message: string) => void;
+  onSearchResults?: (requestId: string, results: SearchResult[], done: boolean) => void;
+  onSearchError?: (requestId: string, error: string) => void;
 }
 
 // ── Bridge message types ──────────────────────────────────────────────────────
@@ -80,12 +85,14 @@ type BridgeMessage =
   | { type: 'TEXT_SELECTED'; cfiRange: string; text: string; chapterIndex: number }
   | { type: 'CHAPTER_TEXT'; requestId: string; ok: boolean; text?: string; title?: string; chapterIndex?: number; error?: string }
   | { type: 'SNIPPET_RESULT'; requestId: string; ok: boolean; words?: string[]; error?: string }
+  | { type: 'SEARCH_RESULTS'; requestId: string; results: SearchResult[]; done: boolean }
+  | { type: 'SEARCH_ERROR'; requestId: string; error: string }
   | { type: 'ERROR'; message: string };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
-  { onReady, onBookReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onTextSelected, onError },
+  { onReady, onBookReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onTextSelected, onError, onSearchResults, onSearchError },
   ref,
 ) {
   const webViewRef = useRef<WebView>(null);
@@ -230,6 +237,9 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
     loadHighlights: (highlights: Pick<Highlight, 'id' | 'cfiRange' | 'color'>[]) => {
       inject(`window.whisper.loadHighlights(${JSON.stringify(highlights)}); true;`);
     },
+    search: (query: string, requestId: string) => {
+      webViewRef.current?.injectJavaScript(JS_SEARCH(query, requestId));
+    },
   }));
 
   // ── Message handler ───────────────────────────────────────────────────────
@@ -366,13 +376,21 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
           onLocationsReady?.(msg.count);
           break;
 
+        case 'SEARCH_RESULTS':
+          onSearchResults?.(msg.requestId, msg.results, msg.done);
+          break;
+
+        case 'SEARCH_ERROR':
+          onSearchError?.(msg.requestId, msg.error);
+          break;
+
         case 'ERROR':
           logger.error('EpubWebView bridge error:', msg.message);
           onError?.(msg.message);
           break;
       }
     },
-    [onReady, onBookReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onTextSelected, onError, flushPending],
+    [onReady, onBookReady, onPositionChange, onLocationsReady, onChapterList, onWordLookup, onParagraphTap, onTextSelected, onError, onSearchResults, onSearchError, flushPending],
   );
 
   if (!bridgeUri) return null;
