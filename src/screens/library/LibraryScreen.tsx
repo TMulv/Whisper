@@ -9,10 +9,11 @@ import {
   Alert,
   RefreshControl,
   Animated,
-  Image,
   Dimensions,
   Easing,
+  Image,
 } from 'react-native';
+import { Video, ResizeMode } from 'expo-av';
 import {
   VoidColors,
   VoidFonts,
@@ -71,6 +72,7 @@ import {
 import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
 import BookSyncIndicator from '@/components/library/BookSyncIndicator';
+import MoeLoading from '@/components/common/MoeLoading';
 
 const ICLOUD_ENABLED_KEY = '@whisper/icloud_enabled';
 
@@ -239,41 +241,6 @@ function ShelfRow({
   );
 }
 
-// ── Skeleton shelf ────────────────────────────────────────────────────────────
-
-function SkeletonShelf() {
-  const pulse = useRef(new Animated.Value(0.35)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.7, duration: 900, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0.35, duration: 900, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse]);
-
-  return (
-    <>
-      {[0, 1].map((r) => (
-        <View key={r}>
-          <View style={styles.row}>
-            {[0, 1, 2].map((i) => (
-              <View key={i} style={styles.shelfBookSlot}>
-                <Animated.View
-                  style={[styles.cover, styles.skeletonCover, { opacity: pulse }]}
-                />
-              </View>
-            ))}
-          </View>
-          <ShelfLine />
-        </View>
-      ))}
-    </>
-  );
-}
-
 // ── Currently Reading hero ────────────────────────────────────────────────────
 // A single featured book — either the now-playing title or the most recently
 // updated one. Styled as an editorial plate: full-bleed cover, refined meta.
@@ -373,10 +340,13 @@ function EmptyShelf({ onAdd }: { onAdd: () => void }) {
 
   return (
     <Animated.View style={[styles.emptyWrap, { opacity: anim }]}>
-      <Image
-        source={require('../../../assets/Moe.png')}
+      <Video
+        source={require('../../../assets/moe-empty.webm')}
         style={styles.emptyMoe}
-        resizeMode="contain"
+        resizeMode={ResizeMode.CONTAIN}
+        shouldPlay
+        isLooping
+        isMuted
       />
       <Text style={styles.emptyHeading}>YOUR SHELF IS QUIET</Text>
       <Text style={styles.emptyBody}>
@@ -942,7 +912,7 @@ export default function LibraryScreen() {
         <View>
           <Header bookCount={0} hours={0} onAdd={handleOpenModal} />
           <View style={styles.divider} />
-          <SkeletonShelf />
+          <MoeLoading variant="standing" message="Loading your library..." />
         </View>
       );
     }
@@ -1284,11 +1254,6 @@ const styles = StyleSheet.create({
   shelfLine: {
     height: 1,
     backgroundColor: VoidColors.ghostlyDim,
-  },
-
-  // Skeleton
-  skeletonCover: {
-    backgroundColor: VoidColors.surface,
   },
 
   // Empty

@@ -38,6 +38,7 @@ import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
 import { logger } from '@/utils/logger';
 import type { LibraryStackParamList } from '@/navigation/types';
+import MoeLoading from '@/components/common/MoeLoading';
 
 type Props = NativeStackScreenProps<LibraryStackParamList, 'BookDetail'>;
 type NavProp = NativeStackNavigationProp<LibraryStackParamList, 'BookDetail'>;
@@ -605,6 +606,12 @@ export default function BookDetailScreen() {
           (navigation as any).getParent()?.navigate('Main', { screen: 'Settings' });
         }}
       />
+
+      {loading && (
+        <View style={styles.loadingOverlay}>
+          <MoeLoading variant="walking" message="Loading book details…" size="large" />
+        </View>
+      )}
     </View>
   );
 }
@@ -842,6 +849,14 @@ const styles = StyleSheet.create({
   aiOptionTitle: { color: C.text, fontSize: 14, fontWeight: '600', marginBottom: 2 },
   aiOptionSubtitle: { color: C.textMuted, fontSize: 12, lineHeight: 17 },
   aiOptionChev: { color: C.textFaint, fontSize: 22, marginLeft: 6 },
+
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(9, 9, 15, 0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 999,
+  },
 
   hiddenEpub: {
     position: 'absolute',

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   ScrollView,
 } from 'react-native';
+import { Video } from 'expo-av';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAuth } from '@/hooks/useAuth';
@@ -57,7 +58,7 @@ export default function SignUpScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.appName}>Whisper</Text>
+        <Text style={styles.appName}>Gno Moe</Text>
         <Text style={styles.tagline}>Create your account</Text>
 
         <View style={styles.form}>
@@ -122,6 +123,17 @@ export default function SignUpScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+      <Video
+        source={require('../../../assets/moe-reading.webm')}
+        rate={1}
+        volume={0}
+        isMuted
+        shouldPlay
+        isLooping
+        resizeMode="contain"
+        style={styles.moe}
+        pointerEvents="none"
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -191,5 +203,12 @@ const styles = StyleSheet.create({
     color: '#C62828',
     marginBottom: 8,
     textAlign: 'center',
+  },
+  moe: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    width: 120,
+    height: 120,
   },
 });
