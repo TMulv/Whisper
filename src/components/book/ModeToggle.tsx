@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, Pressable, StyleSheet, Animated, LayoutChangeEvent } from 'react-native';
 import type { BookSessionMode } from '@/navigation/types';
+import { VoidColors } from '@/constants/voidTheme';
 
 interface Props {
   mode: BookSessionMode;
@@ -72,11 +73,11 @@ export default function ModeToggle({ mode, onChange, outOfSync = false }: Props)
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.10)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.18)',
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: VoidColors.pureWhite,
     padding: 2,
     position: 'relative',
     minWidth: 180,
@@ -86,8 +87,8 @@ const styles = StyleSheet.create({
     top: 2,
     bottom: 2,
     left: 2,
-    borderRadius: 6,
-    backgroundColor: '#C9A96E',
+    borderRadius: 15,
+    backgroundColor: VoidColors.pureWhite,
   },
   segment: {
     flex: 1,
@@ -99,18 +100,19 @@ const styles = StyleSheet.create({
   },
   segText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.65)',
-    letterSpacing: 0.2,
+    fontWeight: '700',
+    color: VoidColors.pureWhite,
+    letterSpacing: 0.4,
   },
   segTextActive: {
-    color: '#0D0D1A',
+    color: VoidColors.void,
+    fontWeight: '800',
   },
   dot: {
     width: 5,
     height: 5,
     borderRadius: 2.5,
-    backgroundColor: '#E85555',
+    backgroundColor: VoidColors.vividCrimson,
     marginLeft: 4,
   },
 });

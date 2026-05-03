@@ -10,10 +10,16 @@ import {
   RefreshControl,
   Animated,
   Image,
-  Platform,
   Dimensions,
   Easing,
 } from 'react-native';
+import {
+  VoidColors,
+  VoidFonts,
+  VoidWeight,
+  VoidRadius,
+  pickAccent,
+} from '@/constants/voidTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -72,29 +78,9 @@ type NavProp = NativeStackNavigationProp<LibraryStackParamList, 'LibraryHome'>;
 type LibraryHomeRoute = RouteProp<LibraryStackParamList, 'LibraryHome'>;
 
 // ── Aesthetic tokens ──────────────────────────────────────────────────────────
-// A warm, paper-in-lamplight dark palette. Generous whitespace carries the design;
-// accents are restrained to thin gold hairlines and a single cream "ink" tone.
-
-const C = {
-  bg: '#09090F',
-  bgWarm: '#0D0B0E',
-  surface: '#14131A',
-  shelf: '#2A241C',        // warm shelf hairline
-  shelfGlow: 'rgba(201,169,110,0.14)',
-  gold: '#C9A96E',
-  goldSoft: '#B09666',
-  goldDim: '#6A5832',
-  ink: '#F2E8D5',          // primary cream text
-  inkMuted: '#9A8E7D',
-  inkFaint: '#4A4238',
-  shadow: '#000',
-  error: '#E85555',
-};
-
-// Platform-aware editorial serif. Apple ships "New York" — a literary display face
-// designed for book-like UI. We fall back to Georgia elsewhere.
-const SERIF = Platform.select({ ios: 'New York', android: 'serif', default: 'Georgia' });
-const SERIF_ITALIC = Platform.select({ ios: 'New York Italic', android: 'serif', default: 'Georgia' });
+// "Vivid Retro-Digital" / "Luminous Industrial Void". Black canvas, white text,
+// one accent per surface (per-book accent via pickAccent). Tokens come from
+// @/constants/voidTheme — never redefine inline.
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const H_PAD = 24;
@@ -117,14 +103,13 @@ function totalHours(books: LocalBook[]): number {
 }
 
 // ── Shelf hairline ────────────────────────────────────────────────────────────
-// The defining visual: a thin gold line each row of books "stands" on.
-// A soft glow beneath sells the illusion of weight without any wood texture.
+// A flat 1px divider in ghostlyDim. No gold, no glow — the void aesthetic uses
+// solid color shifts, not subtle gradients.
 
 function ShelfLine({ inset = 0 }: { inset?: number }) {
   return (
     <View style={[styles.shelfWrap, { marginHorizontal: inset }]}>
       <View style={styles.shelfLine} />
-      <View style={styles.shelfGlow} />
     </View>
   );
 }
@@ -153,6 +138,7 @@ function ShelfBook({
   const lift = press.interpolate({ inputRange: [0, 1], outputRange: [0, -2] });
 
   const display = getBookDisplay(book);
+  const accent = pickAccent(book.id);
 
   return (
     <Pressable
@@ -172,18 +158,17 @@ function ShelfBook({
         {book.coverUri ? (
           <Image source={{ uri: book.coverUri }} style={styles.cover} resizeMode="cover" />
         ) : (
-          <View style={[styles.cover, styles.coverPlaceholder]}>
+          <View style={[styles.cover, styles.coverPlaceholder, { backgroundColor: accent }]}>
             <Text style={styles.coverInitial}>
               {display.title[0]?.toUpperCase() ?? '?'}
             </Text>
-            <View style={styles.coverRule} />
-            <Text style={styles.coverMark}>WHISPER</Text>
           </View>
         )}
-        {/* Thin spine highlight down the left edge — pure CSS depth */}
-        <View pointerEvents="none" style={styles.coverSpine} />
-        {/* Gloss/vignette */}
-        <View pointerEvents="none" style={styles.coverGloss} />
+        {/* Solid 3px accent stripe down the left edge — no gloss, no spine shadow */}
+        <View
+          pointerEvents="none"
+          style={[styles.coverAccentStripe, { backgroundColor: accent }]}
+        />
         {!book.isDownloaded && <View style={styles.cloudDot} />}
         <BookSyncIndicator userId={userId} bookId={book.id} />
       </Animated.View>
@@ -314,26 +299,30 @@ function CurrentlyReading({
   const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [18, 0] });
 
   const display = getBookDisplay(book);
+  const accent = pickAccent(book.id);
 
   return (
     <Animated.View
       style={[styles.heroWrap, { opacity: anim, transform: [{ translateY }] }]}
     >
-      <Text style={styles.sectionEyebrow}>Currently Reading</Text>
+      <Text style={styles.sectionEyebrow}>CURRENTLY READING</Text>
 
       <Pressable onPress={onOpen} style={styles.heroCard}>
         <View style={styles.heroCoverShadow}>
           {book.coverUri ? (
             <Image source={{ uri: book.coverUri }} style={styles.heroCover} resizeMode="cover" />
           ) : (
-            <View style={[styles.heroCover, styles.coverPlaceholder]}>
+            <View style={[styles.heroCover, styles.coverPlaceholder, { backgroundColor: accent }]}>
               <Text style={styles.coverInitial}>
                 {display.title[0]?.toUpperCase() ?? '?'}
               </Text>
             </View>
           )}
-          <View pointerEvents="none" style={styles.heroSpine} />
-          <View pointerEvents="none" style={styles.heroGloss} />
+          {/* Accent stripe down the spine — no gloss */}
+          <View
+            pointerEvents="none"
+            style={[styles.heroAccentStripe, { backgroundColor: accent }]}
+          />
         </View>
 
         <View style={styles.heroMeta}>
@@ -384,12 +373,15 @@ function EmptyShelf({ onAdd }: { onAdd: () => void }) {
 
   return (
     <Animated.View style={[styles.emptyWrap, { opacity: anim }]}>
-      {/* A single empty shelf — even emptiness honors the concept */}
-      <View style={styles.emptyShelfFrame}>
-        <View style={styles.emptyGap} />
-        <ShelfLine />
-      </View>
-
+      <Image
+        source={require('../../../assets/Moe.png')}
+        style={styles.emptyMoe}
+        resizeMode="contain"
+      />
+      <Text style={styles.emptyHeading}>YOUR SHELF IS QUIET</Text>
+      <Text style={styles.emptyBody}>
+        Drop in a book and let Moe get to work.
+      </Text>
       <TouchableOpacity style={styles.emptyBtn} onPress={onAdd} activeOpacity={0.85}>
         <Text style={styles.emptyBtnText}>Pair your first book</Text>
       </TouchableOpacity>
@@ -432,7 +424,7 @@ function Header({
       <View style={styles.topBar}>
         <View style={styles.wordmarkWrap}>
           <View style={styles.wordmarkDot} />
-          <Text style={styles.wordmark}>WHISPER</Text>
+          <Text style={styles.wordmark}>GNO MOE</Text>
         </View>
 
         <TouchableOpacity
@@ -445,7 +437,7 @@ function Header({
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.displayTitle}>Library</Text>
+      <Text style={styles.displayTitle}>LIBRARY</Text>
       <Text style={styles.displayMeta}>{countLine}</Text>
     </Animated.View>
   );
@@ -974,7 +966,7 @@ export default function LibraryScreen() {
             <CurrentlyReading book={heroBook} onOpen={() => handleOpenBook(heroBook)} />
             {shelfBooks.length > 0 ? (
               <Text style={[styles.sectionEyebrow, styles.shelvesEyebrow]}>
-                The Shelf
+                THE SHELF
               </Text>
             ) : null}
           </>
@@ -1006,9 +998,9 @@ export default function LibraryScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={C.gold}
-            colors={[C.gold]}
-            progressBackgroundColor={C.surface}
+            tintColor={VoidColors.pureWhite}
+            colors={[VoidColors.pureWhite]}
+            progressBackgroundColor={VoidColors.surface}
           />
         }
         showsVerticalScrollIndicator={false}
@@ -1050,7 +1042,7 @@ export default function LibraryScreen() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: C.bg },
+  container: { flex: 1, backgroundColor: VoidColors.void },
   list: { paddingHorizontal: H_PAD },
 
   // Header
@@ -1063,62 +1055,61 @@ const styles = StyleSheet.create({
   },
   wordmarkWrap: { flexDirection: 'row', alignItems: 'center' },
   wordmarkDot: {
-    width: 5,
-    height: 5,
-    backgroundColor: C.gold,
+    width: 4,
+    height: 4,
+    backgroundColor: VoidColors.luminousGreen,
     marginRight: 10,
-    transform: [{ rotate: '45deg' }],
   },
   wordmark: {
     fontSize: 10.5,
-    fontWeight: '700',
-    color: C.gold,
+    fontWeight: VoidWeight.bold,
+    color: VoidColors.pureWhite,
     letterSpacing: 3.8,
   },
   addBtn: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.goldDim,
+    borderWidth: 1,
+    borderColor: VoidColors.pureWhite,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: C.bgWarm,
+    backgroundColor: 'transparent',
   },
   addBtnGlyph: {
-    color: C.gold,
+    color: VoidColors.pureWhite,
     fontSize: 20,
     lineHeight: 22,
     fontWeight: '300',
     marginTop: -1,
   },
   displayTitle: {
-    fontFamily: SERIF_ITALIC,
-    fontStyle: 'italic',
-    fontSize: 48,
-    lineHeight: 52,
-    color: C.ink,
-    letterSpacing: -1.2,
+    fontFamily: VoidFonts.display,
+    fontWeight: VoidWeight.black,
+    fontSize: 78,
+    lineHeight: 70,
+    color: VoidColors.pureWhite,
+    letterSpacing: -2.5,
   },
   displayMeta: {
     marginTop: 10,
     fontSize: 12.5,
-    color: C.inkMuted,
+    color: VoidColors.mutedAsh,
     letterSpacing: 0.6,
-    fontWeight: '500',
+    fontWeight: VoidWeight.medium,
   },
 
   divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.shelf,
+    height: 1,
+    backgroundColor: VoidColors.ghostlyDim,
     marginTop: 4,
     marginBottom: 28,
   },
 
   sectionEyebrow: {
     fontSize: 10.5,
-    fontWeight: '700',
-    color: C.gold,
+    fontWeight: VoidWeight.bold,
+    color: VoidColors.pureWhite,
     letterSpacing: 2.8,
     marginBottom: 14,
     textTransform: 'uppercase',
@@ -1138,64 +1129,49 @@ const styles = StyleSheet.create({
     width: 118,
     height: 177,
     marginRight: 22,
-    shadowColor: C.shadow,
-    shadowOpacity: 0.55,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 10,
+    shadowOpacity: 0,
   },
   heroCover: {
     width: 118,
     height: 177,
-    borderRadius: 3,
-    backgroundColor: C.surface,
+    borderRadius: VoidRadius.card,
+    backgroundColor: VoidColors.surface,
   },
-  heroSpine: {
+  heroAccentStripe: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
-    width: 4,
-    borderTopLeftRadius: 3,
-    borderBottomLeftRadius: 3,
-    backgroundColor: 'rgba(0,0,0,0.28)',
-  },
-  heroGloss: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 12,
-    borderTopRightRadius: 3,
-    borderBottomRightRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    width: 3,
+    borderTopLeftRadius: VoidRadius.card,
+    borderBottomLeftRadius: VoidRadius.card,
   },
   heroMeta: { flex: 1, paddingTop: 4 },
   heroTitle: {
-    fontFamily: SERIF,
-    fontSize: 22,
-    lineHeight: 27,
-    color: C.ink,
-    letterSpacing: -0.3,
-    fontWeight: '500',
+    fontFamily: VoidFonts.display,
+    fontWeight: VoidWeight.extrabold,
+    fontSize: 28,
+    lineHeight: 30,
+    color: VoidColors.pureWhite,
+    letterSpacing: -0.5,
   },
   heroAuthor: {
     marginTop: 6,
     fontSize: 13.5,
-    color: C.inkMuted,
+    color: VoidColors.mutedAsh,
     letterSpacing: 0.2,
   },
   heroDivider: {
     marginTop: 14,
     marginBottom: 12,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.shelf,
+    height: 1,
+    backgroundColor: VoidColors.ghostlyDim,
     width: 40,
   },
   heroStats: { flexDirection: 'row', alignItems: 'center' },
   heroStat: {
     fontSize: 12,
-    color: C.inkMuted,
+    color: VoidColors.mutedAsh,
     letterSpacing: 0.8,
     fontVariant: ['tabular-nums'],
   },
@@ -1203,7 +1179,7 @@ const styles = StyleSheet.create({
     width: 3,
     height: 3,
     borderRadius: 1.5,
-    backgroundColor: C.inkFaint,
+    backgroundColor: VoidColors.inkFaint,
     marginHorizontal: 9,
   },
   heroCta: {
@@ -1211,11 +1187,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: C.gold,
-    paddingLeft: 12,
-    paddingRight: 16,
+    backgroundColor: VoidColors.pureWhite,
+    paddingHorizontal: 18,
     paddingVertical: 9,
-    borderRadius: 22,
+    borderRadius: VoidRadius.pill,
   },
   heroPlayDot: {
     width: 0,
@@ -1225,15 +1200,14 @@ const styles = StyleSheet.create({
     borderLeftWidth: 8,
     borderTopColor: 'transparent',
     borderBottomColor: 'transparent',
-    borderLeftColor: C.bg,
+    borderLeftColor: VoidColors.void,
     marginRight: 8,
   },
   heroCtaText: {
-    color: C.bg,
+    color: VoidColors.void,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: VoidWeight.extrabold,
     letterSpacing: 0.8,
-    textTransform: 'uppercase',
   },
 
   // Shelves
@@ -1249,62 +1223,34 @@ const styles = StyleSheet.create({
   coverShadowWrap: {
     width: COVER_W,
     height: COVER_H,
-    shadowColor: C.shadow,
-    shadowOpacity: 0.5,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    shadowOpacity: 0,
+    elevation: 0,
     marginBottom: 12,
   },
   cover: {
     width: COVER_W,
     height: COVER_H,
-    borderRadius: 2.5,
-    backgroundColor: C.surface,
+    borderRadius: VoidRadius.card,
+    backgroundColor: VoidColors.surface,
   },
   coverPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.goldDim,
   },
   coverInitial: {
-    fontFamily: SERIF_ITALIC,
-    fontStyle: 'italic',
+    fontFamily: VoidFonts.display,
+    fontWeight: VoidWeight.black,
     fontSize: 44,
-    color: C.gold,
+    color: VoidColors.void,
   },
-  coverRule: {
-    width: 24,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.goldDim,
-    marginVertical: 10,
-  },
-  coverMark: {
-    fontSize: 8,
-    color: C.goldDim,
-    letterSpacing: 2.4,
-    fontWeight: '700',
-  },
-  coverSpine: {
+  coverAccentStripe: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
     width: 3,
-    borderTopLeftRadius: 2.5,
-    borderBottomLeftRadius: 2.5,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-  },
-  coverGloss: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 8,
-    borderTopRightRadius: 2.5,
-    borderBottomRightRadius: 2.5,
-    backgroundColor: 'rgba(255,255,255,0.035)',
+    borderTopLeftRadius: VoidRadius.card,
+    borderBottomLeftRadius: VoidRadius.card,
   },
   cloudDot: {
     position: 'absolute',
@@ -1313,20 +1259,20 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: C.gold,
+    backgroundColor: VoidColors.luminousGreen,
     opacity: 0.85,
   },
   shelfTitle: {
-    fontSize: 11.5,
-    color: C.ink,
-    fontWeight: '600',
+    fontSize: 12,
+    color: VoidColors.pureWhite,
+    fontWeight: VoidWeight.bold,
     lineHeight: 15,
     letterSpacing: 0.1,
   },
   shelfAuthor: {
     marginTop: 3,
     fontSize: 10.5,
-    color: C.inkMuted,
+    color: VoidColors.mutedAsh,
     letterSpacing: 0.3,
   },
 
@@ -1336,21 +1282,13 @@ const styles = StyleSheet.create({
     marginBottom: 26,
   },
   shelfLine: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: C.shelf,
-  },
-  shelfGlow: {
     height: 1,
-    marginTop: 1,
-    backgroundColor: C.shelfGlow,
-    opacity: 0.5,
+    backgroundColor: VoidColors.ghostlyDim,
   },
 
   // Skeleton
   skeletonCover: {
-    backgroundColor: C.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: C.shelf,
+    backgroundColor: VoidColors.surface,
   },
 
   // Empty
@@ -1359,34 +1297,50 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingHorizontal: 8,
   },
-  emptyShelfFrame: {
-    width: '100%',
-    marginBottom: 40,
+  emptyMoe: {
+    width: 220,
+    height: 220,
+    marginBottom: 28,
   },
-  emptyGap: {
-    height: COVER_H * 0.75,
+  emptyHeading: {
+    fontFamily: VoidFonts.display,
+    fontWeight: VoidWeight.black,
+    fontSize: 39,
+    lineHeight: 35,
+    letterSpacing: -0.78,
+    color: VoidColors.pureWhite,
+    textAlign: 'center',
+  },
+  emptyBody: {
+    marginTop: 12,
+    fontSize: 14,
+    lineHeight: 20,
+    color: VoidColors.mutedAsh,
+    textAlign: 'center',
+    maxWidth: 280,
   },
   emptyBtn: {
-    marginTop: 32,
-    backgroundColor: C.gold,
-    borderRadius: 24,
-    paddingVertical: 13,
-    paddingHorizontal: 30,
+    marginTop: 28,
+    backgroundColor: VoidColors.pureWhite,
+    borderRadius: VoidRadius.pill,
+    paddingVertical: 12,
+    paddingHorizontal: 28,
   },
   emptyBtnText: {
-    color: C.bg,
+    color: VoidColors.void,
     fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
+    fontWeight: VoidWeight.extrabold,
+    letterSpacing: 0.8,
   },
 
   // Errors
   errorBanner: {
-    backgroundColor: '#1A0505',
+    backgroundColor: VoidColors.void,
     padding: 12,
+    borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderBottomColor: '#4A1010',
+    borderTopColor: VoidColors.vividCrimson,
+    borderBottomColor: VoidColors.vividCrimson,
   },
-  errorText: { color: C.error, fontSize: 13, textAlign: 'center' },
+  errorText: { color: VoidColors.vividCrimson, fontSize: 13, textAlign: 'center' },
 });

@@ -12,6 +12,7 @@ import {
 import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import EpubWebView, { EpubWebViewRef, EpubChapter, EpubTheme } from '@/components/reader/EpubWebView';
+import EpubSearchDrawer, { EpubSearchDrawerHandle } from '@/components/reader/EpubSearchDrawer';
 import ReaderDrawer, {
   ReaderFontFamily,
   ReaderLineHeight,
@@ -34,6 +35,7 @@ import { writeBook } from '@/services/firebase/firestoreService';
 import { getCachedPath } from '@/services/storage/localStorageService';
 import { File, Directory, Paths } from 'expo-file-system';
 import { CACHE_DIR, POSITIONS_CACHE_KEY } from '@/constants/config';
+import { VoidColors, VoidRadius } from '@/constants/voidTheme';
 import { EpubPosition } from '@/types/position';
 import {
   savePosition,
@@ -136,6 +138,7 @@ export interface ReaderViewRef {
   getVisibleSnippet: (n?: number, timeoutMs?: number) => Promise<string[] | null>;
   syncToAudio: (timestampSeconds: number, audioChapterIdx: number) => Promise<void>;
   openMenu: () => void;
+  openSearch: () => void;
 }
 
 const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderView(
@@ -166,6 +169,8 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   const [progressDisplay, setProgressDisplay] = useState<ReaderProgressDisplay>('page');
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [pendingSelection, setPendingSelection] = useState<{ cfiRange: string; text: string; chapterIndex: number } | null>(null);
+  const [searchVisible, setSearchVisible] = useState(false);
+  const searchDrawerRef = useRef<EpubSearchDrawerHandle>(null);
 
   const { chapters: audioChapters, book: nowPlayingBook } = useNowPlaying();
   const audioLoadedForThisBook = nowPlayingBook?.id === bookId && audioChapters.length > 0;
@@ -199,6 +204,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       }
     },
     openMenu: () => setControlsVisible(true),
+    openSearch: () => setSearchVisible(true),
     syncToAudio: async (timestampSeconds: number, audioChapterIdx: number) => {
       if (audioChapters.length === 0) return;
       try {
@@ -787,7 +793,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
     setControlsVisible(false);
   }, []);
 
-  const bgColor = theme === 'dark' ? '#121212' : theme === 'sepia' ? '#f5efe0' : '#ffffff';
+  const bgColor = theme === 'dark' ? VoidColors.void : theme === 'sepia' ? '#f5efe0' : '#ffffff';
 
   return (
     <View style={[styles.container, { backgroundColor: bgColor }]}>
@@ -810,14 +816,20 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         onParagraphTap={handleParagraphTap}
         onTextSelected={handleTextSelected}
         onError={setErrorMsg}
+        onSearchResults={(requestId, results, done) =>
+          searchDrawerRef.current?.receiveResults(requestId, results, done)
+        }
+        onSearchError={(requestId, error) =>
+          searchDrawerRef.current?.receiveError(requestId, error)
+        }
       />
 
       {loading && (
-        <View style={styles.loadingOverlay}>
+        <View style={[styles.loadingOverlay, { backgroundColor: theme === 'dark' ? 'rgba(0,0,0,0.92)' : 'rgba(255,255,255,0.9)' }]}>
           <AnimatedLoader
             variant="random"
-            color={theme === 'dark' ? '#C9A96E' : '#1A2438'}
-            accent={theme === 'dark' ? '#F0E6D4' : '#E8DFC8'}
+            color={theme === 'dark' ? VoidColors.luminousGreen : '#1A2438'}
+            accent={theme === 'dark' ? VoidColors.pureWhite : '#E8DFC8'}
             size={72}
             message="Turning to your page"
           />
@@ -868,7 +880,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
             styles.progressLabel,
             {
               bottom: insets.bottom + 12,
-              color: theme === 'dark' ? 'rgba(232,223,200,0.45)' : 'rgba(42,37,32,0.38)',
+              color: theme === 'dark' ? VoidColors.mutedAsh : 'rgba(42,37,32,0.38)',
             },
           ]}
           pointerEvents="none"
@@ -885,6 +897,17 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         </View>
       )}
 
+      {controlsVisible && (
+        <TouchableOpacity
+          style={[styles.searchBtn, { bottom: insets.bottom + 12 }]}
+          onPress={() => { setControlsVisible(false); setSearchVisible(true); }}
+          accessibilityLabel="Search in book"
+          accessibilityRole="button"
+        >
+          <Text style={styles.searchBtnText}>🔍</Text>
+        </TouchableOpacity>
+      )}
+
       <WordLookupModal word={lookupWordValue} onClose={() => setLookupWordValue(null)} />
 
       <HighlightMenu
@@ -893,6 +916,16 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         theme={theme}
         onSelectColor={handleHighlightColor}
         onDismiss={() => setPendingSelection(null)}
+      />
+
+      <EpubSearchDrawer
+        ref={searchDrawerRef}
+        visible={searchVisible}
+        onClose={() => setSearchVisible(false)}
+        onSearch={(query, requestId) =>
+          webViewRef.current?.search(query, requestId)
+        }
+        chapters={chapters}
       />
     </View>
   );
@@ -907,24 +940,23 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.9)',
   },
 
   errorOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: VoidColors.void,
     padding: 32,
   },
-  errorText: { fontSize: 15, color: '#C62828', textAlign: 'center', marginBottom: 24 },
+  errorText: { fontSize: 15, color: VoidColors.vividCrimson, textAlign: 'center', marginBottom: 24, fontWeight: '700', letterSpacing: 0.2 },
   backBtn: {
-    backgroundColor: '#1A1A2E',
-    paddingHorizontal: 24,
+    backgroundColor: VoidColors.pureWhite,
+    paddingHorizontal: 28,
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: VoidRadius.pill,
   },
-  backBtnText: { color: '#fff', fontWeight: '600' },
+  backBtnText: { color: VoidColors.void, fontWeight: '800', letterSpacing: 0.4 },
 
   progressLabel: {
     position: 'absolute',
@@ -939,15 +971,29 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 80,
     alignSelf: 'center',
-    backgroundColor: 'rgba(26,26,46,0.92)',
+    backgroundColor: VoidColors.luminousGreen,
     paddingHorizontal: 18,
     paddingVertical: 9,
-    borderRadius: 20,
+    borderRadius: VoidRadius.pill,
     zIndex: 50,
   },
   tapSeekToastText: {
-    color: '#fff',
+    color: VoidColors.void,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+
+  searchBtn: {
+    position: 'absolute',
+    right: 16,
+    zIndex: 10,
+    backgroundColor: VoidColors.surface,
+    borderRadius: VoidRadius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  searchBtnText: {
+    fontSize: 18,
   },
 });

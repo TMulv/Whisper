@@ -27,6 +27,7 @@ import { useOpportunisticAlignment } from '@/hooks/useOpportunisticAlignment';
 import ReaderView, { ReaderViewRef } from '@/components/book/ReaderView';
 import ListenView from '@/components/book/ListenView';
 import ReaderChrome, { ReaderChromeRef } from '@/components/book/ReaderChrome';
+import { VoidColors } from '@/constants/voidTheme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BookSession'>;
 
@@ -77,10 +78,10 @@ export default function BookSessionScreen() {
   }, [refreshTheme]);
 
   const bgColor =
-    theme === 'dark' ? '#121212'
+    theme === 'dark' ? VoidColors.void
     : theme === 'sepia' ? '#f5efe0'
     : '#ffffff';
-  const textColor = theme === 'dark' ? '#E8DFC8' : '#2A2520';
+  const textColor = theme === 'dark' ? VoidColors.pureWhite : '#2A2520';
 
   const handleOpenMenu = useCallback(() => {
     readerRef.current?.openMenu();

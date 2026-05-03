@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import AudioSearchModal from '@/components/book/AudioSearchModal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
@@ -23,6 +24,7 @@ import { formatDuration } from '@/utils/timeUtils';
 import { getBookDisplay } from '@/utils/bookDisplay';
 import { M4BChapter } from '@/types/sync';
 import AIInsightsModal from '@/components/ai/AIInsightsModal';
+import { VoidColors, VoidFonts, VoidRadius } from '@/constants/voidTheme';
 
 const RATES = [0.75, 1.0, 1.25, 1.5, 2.0];
 
@@ -55,6 +57,7 @@ export default function ListenView({ bookId }: ListenViewProps) {
   const [chaptersOpen, setChaptersOpen] = useState(false);
   const [lookingUpChapters, setLookingUpChapters] = useState(false);
   const [aiVisible, setAiVisible] = useState(false);
+  const [searchVisible, setSearchVisible] = useState(false);
   const [scrubberWidth, setScrubberWidth] = useState(1);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
@@ -259,6 +262,10 @@ export default function ListenView({ bookId }: ListenViewProps) {
             <Text style={styles.speedLabel}>{playbackRate === 1.0 ? '1×' : `${playbackRate}×`}</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity style={styles.searchBtn} onPress={() => setSearchVisible(true)} activeOpacity={0.8}>
+            <Text style={styles.searchBtnText}>🔍 Search</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.aiBtn} onPress={() => setAiVisible(true)} activeOpacity={0.8}>
             <Text style={styles.aiBtnText}>✨ Insights</Text>
           </TouchableOpacity>
@@ -300,6 +307,14 @@ export default function ListenView({ bookId }: ListenViewProps) {
           }}
         />
 
+        <AudioSearchModal
+          visible={searchVisible}
+          onClose={() => setSearchVisible(false)}
+          audioPath={book?.localAudioUri ?? book?.audioPath ?? null}
+          chapters={chapters}
+          onSeek={seekTo}
+        />
+
         {chapters.length > 1 && (
           <View style={styles.chapterSection}>
             <TouchableOpacity style={styles.chapterToggle} onPress={() => setChaptersOpen((v) => !v)}>
@@ -320,7 +335,7 @@ export default function ListenView({ bookId }: ListenViewProps) {
                       <Text style={[styles.chapterRowTitle, isActive && styles.chapterRowTitleActive]} numberOfLines={1}>
                         {ch.title}
                       </Text>
-                      <Text style={styles.chapterRowTime}>{formatDuration(ch.startSeconds)}</Text>
+                      <Text style={[styles.chapterRowTime, isActive && styles.chapterRowTimeActive]}>{formatDuration(ch.startSeconds)}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -336,61 +351,63 @@ export default function ListenView({ bookId }: ListenViewProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0D0D1A',
+    backgroundColor: VoidColors.void,
   },
 
   scroll: {
     paddingHorizontal: 24,
-    paddingTop: 12,
+    paddingTop: 52,
     alignItems: 'center',
   },
 
   coverWrap: {
-    marginBottom: 28,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 10,
+    marginBottom: 32,
   },
   cover: {
     width: 260,
     height: 260,
-    borderRadius: 12,
+    borderRadius: VoidRadius.cardLg,
   },
   coverPlaceholder: {
-    backgroundColor: '#1A1A3E',
+    backgroundColor: VoidColors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
   coverInitial: {
-    color: 'rgba(255,255,255,0.4)',
-    fontSize: 80,
-    fontWeight: '700',
+    fontFamily: VoidFonts.display,
+    color: VoidColors.pureWhite,
+    fontSize: 96,
+    fontWeight: '900',
+    letterSpacing: -4,
   },
 
   meta: {
     alignItems: 'center',
-    marginBottom: 28,
+    marginBottom: 32,
     width: '100%',
   },
   title: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#fff',
+    fontFamily: VoidFonts.display,
+    fontSize: 24,
+    fontWeight: '800',
+    color: VoidColors.pureWhite,
     textAlign: 'center',
     lineHeight: 26,
+    letterSpacing: -0.5,
   },
   author: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.55)',
-    marginTop: 6,
+    color: VoidColors.mutedAsh,
+    marginTop: 8,
   },
   chapter: {
-    fontSize: 13,
-    color: '#6B9FD4',
-    marginTop: 8,
+    fontSize: 12,
+    fontWeight: '700',
+    color: VoidColors.luminousGreen,
+    marginTop: 12,
     textAlign: 'center',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
   },
 
   scrubberSection: {
@@ -406,9 +423,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 16,
     left: 0,
-    height: 4,
-    backgroundColor: '#fff',
-    borderRadius: 2,
+    height: 3,
+    backgroundColor: VoidColors.pureWhite,
   },
   scrubberThumb: {
     position: 'absolute',
@@ -416,12 +432,8 @@ const styles = StyleSheet.create({
     width: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: '#fff',
+    backgroundColor: VoidColors.pureWhite,
     marginLeft: -8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
   },
   timeRow: {
     flexDirection: 'row',
@@ -430,8 +442,9 @@ const styles = StyleSheet.create({
   },
   timeText: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.45)',
+    color: VoidColors.mutedAsh,
     fontVariant: ['tabular-nums'],
+    letterSpacing: 0.4,
   },
 
   controls: {
@@ -439,7 +452,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
-    marginBottom: 24,
+    marginBottom: 28,
     width: '100%',
   },
   controlBtn: {
@@ -450,31 +463,27 @@ const styles = StyleSheet.create({
   },
   controlIcon: {
     fontSize: 22,
-    color: 'rgba(255,255,255,0.85)',
+    color: VoidColors.pureWhite,
   },
   controlLabel: {
     fontSize: 10,
-    color: 'rgba(255,255,255,0.6)',
+    color: VoidColors.mutedAsh,
     position: 'absolute',
     bottom: 6,
+    letterSpacing: 0.4,
   },
   playPauseBtn: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: '#fff',
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: VoidColors.pureWhite,
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
   },
   playPauseIcon: {
     fontSize: 28,
-    color: '#0D0D1A',
+    color: VoidColors.void,
     marginLeft: 2,
   },
 
@@ -484,84 +493,104 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
     marginBottom: 24,
+    gap: 8,
   },
   speedBtn: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    backgroundColor: 'transparent',
+    borderRadius: VoidRadius.pill,
+    paddingHorizontal: 18,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: VoidColors.pureWhite,
   },
   speedLabel: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    color: VoidColors.pureWhite,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  searchBtn: {
+    backgroundColor: 'transparent',
+    borderRadius: VoidRadius.pill,
+    paddingHorizontal: 18,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: VoidColors.pureWhite,
+  },
+  searchBtnText: {
+    color: VoidColors.pureWhite,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.4,
   },
   aiBtn: {
-    backgroundColor: 'rgba(201,169,110,0.18)',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(201,169,110,0.45)',
+    backgroundColor: VoidColors.electricYellow,
+    borderRadius: VoidRadius.pill,
+    paddingHorizontal: 18,
+    paddingVertical: 7,
   },
   aiBtnText: {
-    color: '#E8D4A8',
-    fontSize: 14,
-    fontWeight: '600',
+    color: VoidColors.void,
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.4,
   },
 
   findChaptersSection: {
     width: '100%',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: VoidColors.surface,
+    borderRadius: VoidRadius.cardLg,
+    padding: 18,
     marginBottom: 12,
   },
   findChaptersHeading: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    color: VoidColors.pureWhite,
+    fontSize: 15,
+    fontWeight: '800',
     marginBottom: 4,
+    letterSpacing: -0.2,
   },
   findChaptersBody: {
-    color: 'rgba(255,255,255,0.5)',
-    fontSize: 12,
+    color: VoidColors.mutedAsh,
+    fontSize: 13,
     lineHeight: 18,
-    marginBottom: 12,
+    marginBottom: 14,
   },
   findChaptersBtn: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    paddingVertical: 10,
+    backgroundColor: VoidColors.pureWhite,
+    borderRadius: VoidRadius.pill,
+    paddingVertical: 11,
     alignItems: 'center',
   },
   findChaptersBtnText: {
-    color: '#0D0D1A',
+    color: VoidColors.void,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: 0.4,
   },
   btnDisabled: { opacity: 0.5 },
 
   chapterSection: {
     width: '100%',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
+    backgroundColor: VoidColors.surface,
+    borderRadius: VoidRadius.cardLg,
     overflow: 'hidden',
   },
   chapterToggle: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingVertical: 14,
   },
   chapterToggleText: {
-    color: '#fff',
+    color: VoidColors.pureWhite,
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '800',
+    letterSpacing: -0.2,
   },
   chapterToggleIcon: {
-    color: 'rgba(255,255,255,0.5)',
+    color: VoidColors.mutedAsh,
     fontSize: 12,
   },
   chapterList: {},
@@ -569,27 +598,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingVertical: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.08)',
+    borderTopColor: VoidColors.ghostlyDim,
   },
   chapterRowActive: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: VoidColors.luminousGreen,
   },
   chapterRowTitle: {
     flex: 1,
     fontSize: 14,
-    color: 'rgba(255,255,255,0.7)',
+    color: VoidColors.mutedAsh,
     marginRight: 12,
   },
   chapterRowTitleActive: {
-    color: '#fff',
-    fontWeight: '600',
+    color: VoidColors.void,
+    fontWeight: '800',
   },
   chapterRowTime: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.4)',
+    color: VoidColors.mutedAsh,
     fontVariant: ['tabular-nums'],
+  },
+  chapterRowTimeActive: {
+    color: VoidColors.void,
+    fontWeight: '700',
   },
 });
