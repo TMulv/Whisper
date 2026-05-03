@@ -210,9 +210,14 @@ export default function BookDetailScreen() {
     }
   };
 
-  const handleOpenReader = () => {
+  const handleOpenReader = async () => {
     const resumeFromAudio = nowPlayingBook?.id === params.bookId;
-    navigateRoot('BookSession', { bookId: params.bookId, mode: 'read', resumeFromAudio });
+    const lastMode = await AsyncStorage.getItem(`@whisper/last_mode:${params.bookId}`);
+    navigateRoot('BookSession', {
+      bookId: params.bookId,
+      mode: (lastMode === 'read' || lastMode === 'listen') ? lastMode : 'read',
+      resumeFromAudio,
+    });
   };
 
   const ensureHiddenEpubLoaded = async (): Promise<boolean> => {

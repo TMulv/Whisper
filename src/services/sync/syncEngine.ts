@@ -20,7 +20,13 @@ export function resolvePosition(
   if (remotePercent <= 0) {
     return { local, remote, resolution: 'local' };
   }
-  if (localPercent <= 0 || remotePercent > localPercent) {
+  if (localPercent <= 0) {
+    return { local, remote, resolution: 'remote' };
+  }
+  if (Math.abs(remotePercent - localPercent) < 0.01) {
+    return { local, remote, resolution: remote.updatedAt > local.updatedAt ? 'remote' : 'local' };
+  }
+  if (remotePercent > localPercent) {
     return { local, remote, resolution: 'remote' };
   }
   return { local, remote, resolution: 'local' };
@@ -46,6 +52,7 @@ export async function pushPosition(
     source: position.source,
     deviceId,
     updatedAt: position.updatedAt,
+    lastMode: position.lastMode,
   };
 
   await Promise.all([

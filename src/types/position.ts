@@ -24,6 +24,7 @@ export interface SyncedPosition {
   percentComplete: number;
   source: 'epub' | 'audio';
   updatedAt: number;
+  lastMode?: 'read' | 'listen';
 }
 
 export interface PositionConflict {

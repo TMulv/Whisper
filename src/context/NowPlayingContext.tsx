@@ -1,10 +1,13 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getAuth } from '@react-native-firebase/auth';
 import { LocalBook } from '@/types/book';
 import { M4BChapter } from '@/types/sync';
+import { SyncedPosition } from '@/types/position';
 import { setupPlayer, loadBook, play } from '@/services/audio/trackPlayerService';
-import { POSITIONS_CACHE_KEY } from '@/constants/config';
+import { pushPosition } from '@/services/sync/syncEngine';
+import { POSITIONS_CACHE_KEY, DEVICE_ID_KEY } from '@/constants/config';
 
 interface NowPlayingState {
   book: LocalBook | null;
@@ -31,6 +34,15 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
   const [book, setBook] = useState<LocalBook | null>(null);
   const [chapters, setChapters] = useState<M4BChapter[]>([]);
   const playerReady = React.useRef(false);
+  const isRestoringAudioRef = useRef(false);
+  const deviceIdRef = useRef<string>('');
+
+  // Load device ID once on mount so it's available synchronously in saveAudioPosition
+  useEffect(() => {
+    AsyncStorage.getItem(DEVICE_ID_KEY).then((id) => {
+      if (id) deviceIdRef.current = id;
+    }).catch(() => {});
+  }, []);
 
   // Persist audio position so the reader can resume from the right spot
   // even after the app is closed or audio is paused and not replayed.
@@ -41,6 +53,7 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
   const saveAudioPosition = useCallback(
     (pos: number) => {
       if (!book || pos <= 0) return;
+      if (isRestoringAudioRef.current) return;
       const currentChapter = chapters.reduce(
         (best, ch) => (ch.startSeconds <= pos ? ch : best),
         chapters[0] ?? null,
@@ -55,6 +68,23 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
           updatedAt: Date.now(),
         }),
       ).catch(() => {});
+
+      const uid = getAuth().currentUser?.uid;
+      const devId = deviceIdRef.current;
+      if (uid && devId) {
+        const synced: SyncedPosition = {
+          bookId: book.id,
+          deviceId: devId,
+          chapterIndex: currentChapter?.index ?? 0,
+          epubCfi: '',
+          charOffset: 0,
+          audioTimestamp: pos,
+          percentComplete: book.totalDurationSeconds > 0 ? pos / book.totalDurationSeconds : 0,
+          source: 'audio',
+          updatedAt: Date.now(),
+        };
+        pushPosition(uid, book.id, devId, synced).catch(() => {});
+      }
     },
     [book, chapters],
   );
@@ -78,6 +108,7 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
     newChapters: M4BChapter[],
     startTimestamp: number = 0,
   ) => {
+    isRestoringAudioRef.current = true;
     if (!playerReady.current) {
       const ok = await setupPlayer();
       if (!ok) throw new Error('Failed to initialise audio player');
@@ -87,6 +118,7 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
     setBook(newBook);
     setChapters(newChapters);
     await play();
+    setTimeout(() => { isRestoringAudioRef.current = false; }, 2000);
   }, []);
 
   const clearNowPlaying = useCallback(async () => {

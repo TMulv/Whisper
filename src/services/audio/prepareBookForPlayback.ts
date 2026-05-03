@@ -179,6 +179,16 @@ export async function prepareBookForPlayback(
       });
     }
 
+    // Last-resort: if all epub→audio resolution still yields 0 and a raw audio
+    // position exists, use it directly to avoid a jarring restart from 0:00.
+    if (startTimestamp === 0 && savedAudioPos && savedAudioPos.timestampSeconds > 0) {
+      startTimestamp = savedAudioPos.timestampSeconds;
+      logger.info('prepareBookForPlayback: fell back to raw audio timestamp', {
+        bookId,
+        timestampSeconds: startTimestamp,
+      });
+    }
+
     logger.info('prepareBookForPlayback: resolving start position', {
       livePercent: livePosition?.percentComplete,
       liveChapterFraction: livePosition?.chapterFraction,

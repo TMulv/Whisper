@@ -23,6 +23,7 @@ export interface FirestorePosition {
   source: 'epub' | 'audio';
   deviceId: string;
   updatedAt: number;
+  lastMode?: 'read' | 'listen';
 }
 
 export interface FirestoreUserSettings {

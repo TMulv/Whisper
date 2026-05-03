@@ -285,6 +285,7 @@ export default function BookSessionScreen() {
 
     setMode(next);
     animateTo(next);
+    AsyncStorage.setItem(`@whisper/last_mode:${params.bookId}`, next).catch(() => {});
   }, [mode, switching, audioLoadedForThisBook, audioChapters, hasAudio, user, params.bookId, startPlayback, animateTo]);
 
   return (
