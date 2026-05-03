@@ -10,6 +10,7 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -65,7 +66,7 @@ export default function SignInScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.appName}>Whisper</Text>
+        <Text style={styles.appName}>Gno Moe</Text>
         <Text style={styles.tagline}>Your Eyes or Ears</Text>
 
         <View style={styles.form}>
@@ -127,6 +128,12 @@ export default function SignInScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+      <Image
+        source={require('../../../assets/Moe.png')}
+        style={styles.moe}
+        resizeMode="contain"
+        pointerEvents="none"
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -196,5 +203,12 @@ const styles = StyleSheet.create({
     color: '#C62828',
     marginBottom: 8,
     textAlign: 'center',
+  },
+  moe: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    width: 120,
+    height: 120,
   },
 });

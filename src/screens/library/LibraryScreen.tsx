@@ -1087,7 +1087,7 @@ const styles = StyleSheet.create({
     fontFamily: VoidFonts.display,
     fontWeight: VoidWeight.black,
     fontSize: 78,
-    lineHeight: 70,
+    lineHeight: 92,
     color: VoidColors.pureWhite,
     letterSpacing: -2.5,
   },
