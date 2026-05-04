@@ -1,12 +1,12 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
+import { Video, ResizeMode } from 'expo-av';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList, AuthStackParamList } from './types';
 import MainTabNavigator from './MainTabNavigator';
 import SignInScreen from '@/screens/auth/SignInScreen';
 import SignUpScreen from '@/screens/auth/SignUpScreen';
 import BookSessionScreen from '@/screens/book/BookSessionScreen';
-import { AnimatedLoader } from '@/components/common/AnimatedLoader';
 import { useAuth } from '@/hooks/useAuth';
 
 const Root = createNativeStackNavigator<RootStackParamList>();
@@ -27,12 +27,13 @@ export default function RootNavigator() {
   if (loading) {
     return (
       <View style={styles.loading}>
-        <AnimatedLoader
-          variant="random"
-          color="#C9A96E"
-          accent="#F0E6D4"
-          size={72}
-          message="Opening your library"
+        <Video
+          source={require('../../assets/moe-transparent.webm')}
+          style={styles.loadingVideo}
+          resizeMode={ResizeMode.CONTAIN}
+          shouldPlay
+          isLooping
+          isMuted
         />
       </View>
     );
@@ -61,6 +62,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#09090F',
+    backgroundColor: '#000000',
+  },
+  loadingVideo: {
+    width: 280,
+    height: 280,
   },
 });

@@ -12,6 +12,7 @@ import {
   Dimensions,
   Easing,
   Image,
+  Platform,
 } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import {
@@ -22,6 +23,7 @@ import {
   pickAccent,
 } from '@/constants/voidTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -445,6 +447,12 @@ export default function LibraryScreen() {
    *  confirm-success or modal dismiss. */
   const sessionBookIdRef = useRef<string | null>(null);
   const insets = useSafeAreaInsets();
+  const hookTabBarHeight = useBottomTabBarHeight();
+  // useBottomTabBarHeight returns 0 inside NativeStack nested in a tab — fall
+  // back to the known tab bar height from MainTabNavigator (64 + 18px iOS
+  // bottom pad + 1px accent line) plus the device safe area bottom inset.
+  const TAB_BAR_H = Platform.OS === 'ios' ? 83 : 65;
+  const tabBarHeight = hookTabBarHeight > 0 ? hookTabBarHeight : TAB_BAR_H + insets.bottom;
 
   const startOrReuseSession = useCallback((): string => {
     if (sessionBookIdRef.current) return sessionBookIdRef.current;
@@ -962,7 +970,7 @@ export default function LibraryScreen() {
         ListFooterComponent={rows.length > 0 ? <ShelfLine /> : null}
         contentContainerStyle={[
           styles.list,
-          { paddingBottom: insets.bottom + 48 },
+          { paddingBottom: tabBarHeight + 16 },
         ]}
         refreshControl={
           <RefreshControl
