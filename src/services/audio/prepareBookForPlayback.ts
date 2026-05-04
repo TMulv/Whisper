@@ -7,7 +7,7 @@ import { POSITIONS_CACHE_KEY } from '@/constants/config';
 import { LocalBook } from '@/types/book';
 import { M4BChapter } from '@/types/sync';
 import { getOrBuildLayer0 } from '@/services/sync/alignmentStore';
-import { readerToAudio, audioToReader } from '@/services/sync/handoff';
+import { readerToAudio } from '@/services/sync/handoff';
 import { EpubPosition, AudioPosition } from '@/types/position';
 import { logger } from '@/utils/logger';
 
@@ -108,14 +108,18 @@ export async function prepareBookForPlayback(
       if (audioRaw) savedAudioPos = JSON.parse(audioRaw) as AudioPosition & { updatedAt: number };
     } catch { /* ignore */ }
 
-    // Prefer the caller's live position (chapter and CFI are always current).
-    let epubPos: EpubPosition | null = livePosition ?? savedEpubPos;
+    // Two distinct intents:
+    //   (a) Caller passed livePosition  → "sync audio to where I'm reading"
+    //       (handoff from read mode, in-session). Use livePosition.
+    //   (b) No livePosition             → "resume listening where I last
+    //       listened" (cold open via Play button). Use saved audio
+    //       timestamp directly. The saved EPUB position is irrelevant here
+    //       and using it would jump the user backward whenever the audio
+    //       has progressed past the reader's last page.
+    let epubPos: EpubPosition | null = livePosition ?? null;
 
-    // If percentComplete is still 0 after locationsReady, LOCATIONS_READY fired
-    // without a valid CFI (currentLocation() returned null during location
-    // generation). Fall back to the last persisted position for the same chapter —
-    // it's more reliable than a chapter-local chapterFraction which can't be mapped
-    // to book-level time without knowing the total epub chapter count.
+    // If livePosition's percentComplete is still 0 (LOCATIONS_READY fired
+    // without a valid CFI), borrow from saved EPUB for the same chapter.
     if (
       epubPos &&
       epubPos.percentComplete === 0 &&
@@ -126,35 +130,14 @@ export async function prepareBookForPlayback(
       epubPos = { ...epubPos, percentComplete: savedEpubPos.percentComplete };
     }
 
-    // If we have a saved audio position and no reliable epub position at all,
-    // convert the audio position back to an epub position. Only do this when
-    // there is no live position (i.e. we were NOT called from the reader) and
-    // no saved epub position — the reader's live position is always more accurate
-    // than reversing an audio timestamp through the alignment.
-    if (
-      !livePosition &&
-      !savedEpubPos &&
-      savedAudioPos &&
-      savedAudioPos.timestampSeconds > 0
-    ) {
-      // Build alignment once and use it for both conversions
-      const alignment = await getOrBuildLayer0(
-        bookId,
-        chapters,
-        book.totalChapters || chapters.length,
-      );
-      epubPos = audioToReader(
-        {
-          chapterIndex: savedAudioPos.chapterIndex,
-          timestampSeconds: savedAudioPos.timestampSeconds,
-          percentComplete: savedAudioPos.percentComplete,
-        },
-        alignment,
-      );
-      startTimestamp = readerToAudio(epubPos, alignment).timestampSeconds;
-      logger.info('prepareBookForPlayback: used saved audio position', {
-        audioTimestamp: savedAudioPos.timestampSeconds,
-        startTimestamp,
+    // Cold-open path: prefer the raw saved audio timestamp. Skips the
+    // EPUB→audio conversion entirely so the user resumes EXACTLY where the
+    // audio stopped.
+    if (!livePosition && savedAudioPos && savedAudioPos.timestampSeconds > 0) {
+      startTimestamp = savedAudioPos.timestampSeconds;
+      logger.info('prepareBookForPlayback: cold-open using saved audio timestamp', {
+        timestampSeconds: startTimestamp,
+        chapterIndex: savedAudioPos.chapterIndex,
       });
     } else if (epubPos && (epubPos.cfi || epubPos.chapterIndex > 0 || epubPos.percentComplete > 0 || (epubPos.chapterFraction ?? -1) >= 0)) {
       // Use epub position (from live reader or saved)
