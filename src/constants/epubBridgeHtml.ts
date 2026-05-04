@@ -56,7 +56,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         for (var i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
         this.loadBook(bytes.buffer);
       },
-      loadBookFromUri: function(uri) {
+      loadBookFromUri: function(uri, startCfi) {
         var self = this;
         try {
           var xhr = new XMLHttpRequest();
@@ -65,7 +65,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           xhr.onload = function() {
             var buf = xhr.response;
             if ((xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) && buf && buf.byteLength > 0) {
-              self.loadBook(buf);
+              self.loadBook(buf, startCfi);
             } else {
               postToRN({type:'ERROR',message:'xhr bad status='+xhr.status+' bytes='+(buf&&buf.byteLength)});
             }
@@ -76,7 +76,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           postToRN({type:'ERROR',message:'xhr threw: '+(e.message||e)});
         }
       },
-      loadBook: function(url) {
+      loadBook: function(url, startCfi) {
         showLoading(true);
         // Mark load time so the initial locationChanged event (chapter-0 render)
         // is treated as programmatic. Without this, a saved-CFI restore that sets
@@ -160,7 +160,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               }, 300);
             });
           }); } catch(e) { postToRN({type:'ERROR',message:'word-lookup hook failed: '+(e.message||e)}); }
-          _rendition.display()
+          _rendition.display(startCfi || undefined)
             .then(function(){ showLoading(false); return _book.loaded.navigation; })
             .then(function(nav){
               _chapters = buildChapterList(nav.toc);

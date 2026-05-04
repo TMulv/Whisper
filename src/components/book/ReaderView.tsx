@@ -244,7 +244,14 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
     },
     markPositionHere: () => {
       const live = livePositionRef.current;
+      console.log('[DBG] markPositionHere ENTRY', {
+        hasLive: !!live,
+        cfi: live?.cfi?.substring(0, 30),
+        chapterIndex: live?.chapterIndex,
+        percent: live?.percentComplete,
+      });
       if (!live?.cfi) {
+        console.log('[DBG] markPositionHere ABORT — no live position');
         logger.warn('ReaderView: markPositionHere skipped (no live position)');
         return false;
       }
@@ -411,67 +418,78 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           logger.warn('ReaderView: could not stat epub file', err);
         }
 
+        // Resolve the start CFI BEFORE handing the EPUB to the bridge. The
+        // bridge passes it to rendition.display() so the very first frame
+        // opens at the right spot — no chapter-0 flash, no race against
+        // locations.generate(), no queued goTo waiting for locationsReady.
+        // Three sources, in priority order:
+        //   1. Audio handoff (resumeFromAudio): convert audio time → CFI
+        //   2. Saved local EPUB position
+        //   3. None: open at start of book
+        let startCfi: string | undefined;
+
+        if (resumeFromAudio) {
+          let audioTimestampForHandoff = audioPosition;
+          if (audioTimestampForHandoff === 0) {
+            try {
+              const audioKey = `${POSITIONS_CACHE_KEY}:${bookId}:audio`;
+              const raw = await AsyncStorage.getItem(audioKey);
+              if (raw) {
+                const parsed = JSON.parse(raw) as { timestampSeconds: number };
+                audioTimestampForHandoff = parsed.timestampSeconds ?? 0;
+              }
+            } catch { /* use 0 */ }
+          }
+          if (audioTimestampForHandoff > 0 && audioChapters.length > 0) {
+            try {
+              const alignment = await getOrBuildLayer0(
+                bookId,
+                audioChapters,
+                chapters.length > 0 ? chapters.length : audioChapters.length,
+              );
+              const audioChapterIdx = currentAudioChapter?.index
+                ?? audioChapters.reduce(
+                    (best, ch) => (ch.startSeconds <= audioTimestampForHandoff ? ch : best),
+                    audioChapters[0],
+                  ).index;
+              const target = audioToReader(
+                {
+                  chapterIndex: audioChapterIdx,
+                  timestampSeconds: audioTimestampForHandoff,
+                  percentComplete: 0,
+                },
+                alignment,
+              );
+              if (target.cfi) startCfi = target.cfi;
+            } catch (err) {
+              logger.warn('ReaderView: audio handoff alignment failed', err);
+            }
+          }
+        }
+
+        if (!startCfi) {
+          const saved = await loadLocalPosition();
+          if (saved?.cfi) {
+            startCfi = saved.cfi;
+            logger.info('ReaderView: opening at saved CFI', {
+              cfi: saved.cfi,
+              chapterIndex: saved.chapterIndex,
+            });
+          } else {
+            logger.info('ReaderView: no saved CFI — opening at start');
+          }
+        } else {
+          logger.info('ReaderView: opening at audio-handoff CFI', { cfi: startCfi });
+        }
+
         logger.info('ReaderView: handing epub uri to WebView', { uri: epubUri });
-        webViewRef.current?.loadBookFromUri(epubUri);
+        webViewRef.current?.loadBookFromUri(epubUri, startCfi);
 
         webViewRef.current?.setFontSize(fontSize);
         webViewRef.current?.setLineHeight(lineHeight);
         webViewRef.current?.setTheme(theme);
         webViewRef.current?.setFontFamily(FONT_FAMILY_VALUES[fontFamily]);
         webViewRef.current?.setMargin(MARGIN_VALUES[margin]);
-
-        const saved = await loadLocalPosition();
-        logger.info('ReaderView: loaded saved position', {
-          hasCfi: !!saved?.cfi,
-          cfi: saved?.cfi ?? '(null)',
-          chapterIndex: saved?.chapterIndex ?? -1,
-        });
-
-        let audioTimestampForHandoff = audioPosition;
-        if (resumeFromAudio && audioTimestampForHandoff === 0) {
-          try {
-            const audioKey = `${POSITIONS_CACHE_KEY}:${bookId}:audio`;
-            const raw = await AsyncStorage.getItem(audioKey);
-            if (raw) {
-              const parsed = JSON.parse(raw) as { timestampSeconds: number };
-              audioTimestampForHandoff = parsed.timestampSeconds ?? 0;
-            }
-          } catch { /* use 0 */ }
-        }
-
-        if (resumeFromAudio && audioTimestampForHandoff > 0 && audioChapters.length > 0) {
-          setPendingCfi(null);
-          const alignment = await getOrBuildLayer0(
-            bookId,
-            audioChapters,
-            chapters.length > 0 ? chapters.length : audioChapters.length,
-          );
-          const audioChapterIdx = currentAudioChapter?.index
-            ?? audioChapters.reduce(
-                (best, ch) => (ch.startSeconds <= audioTimestampForHandoff ? ch : best),
-                audioChapters[0],
-              ).index;
-          const target = audioToReader(
-            {
-              chapterIndex: audioChapterIdx,
-              timestampSeconds: audioTimestampForHandoff,
-              percentComplete: 0,
-            },
-            alignment,
-          );
-          setTimeout(() => {
-            if (target.cfi) webViewRef.current?.goTo(target.cfi);
-            else webViewRef.current?.goToChapter(target.chapterIndex);
-          }, 1000);
-        } else if (saved?.cfi) {
-          logger.info('ReaderView: setting pendingCfi for restore', { cfi: saved.cfi });
-          pendingRestorePositionRef.current = { ...saved, chapterFraction: -1 };
-          pendingCfiRef.current = saved.cfi;
-          savedChapterIndexRef.current = saved.chapterIndex;
-          setPendingCfi(saved.cfi);
-        } else {
-          logger.info('ReaderView: no saved CFI — opening at chapter 0');
-        }
       } catch (err) {
         logger.error('ReaderView: failed to load epub', err);
         setErrorMsg('Failed to load book. Please try again.');

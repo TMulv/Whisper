@@ -40,7 +40,7 @@ export interface EpubChapter {
 export interface EpubWebViewRef {
   loadBook: (localUri: string) => void;
   loadBookBase64: (base64: string) => void;
-  loadBookFromUri: (fileUri: string) => void;
+  loadBookFromUri: (fileUri: string, startCfi?: string) => void;
   goTo: (cfi: string) => void;
   goToChapter: (index: number) => void;
   setFontSize: (px: number) => void;
@@ -178,11 +178,14 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
       }
       inject('window.whisper.loadBookFromBase64(window._ebp.join("")); window._ebp=null; true;');
     },
-    loadBookFromUri: (fileUri: string) => {
+    loadBookFromUri: (fileUri: string, startCfi?: string) => {
       // Preferred path for large EPUBs: the WebView fetches the file directly
       // via its own file:// access instead of us shuttling 31 MB across the RN
       // bridge. Requires allowFileAccess(FromFileURLs) on the WebView.
-      inject(`window.whisper.loadBookFromUri(${JSON.stringify(fileUri)}); true;`);
+      // startCfi makes epub.js's first display() jump straight to the saved
+      // location — eliminates the chapter-0 flash before restore lands.
+      const cfiArg = startCfi ? `, ${JSON.stringify(startCfi)}` : '';
+      inject(`window.whisper.loadBookFromUri(${JSON.stringify(fileUri)}${cfiArg}); true;`);
     },
     goTo: (cfi: string) => inject(JS_GO_TO_CFI(cfi)),
     goToChapter: (index: number) => inject(JS_GO_TO_CHAPTER(index)),
