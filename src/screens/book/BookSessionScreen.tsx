@@ -20,6 +20,7 @@ import {
   readerToAudio,
 } from '@/services/sync/handoff';
 import { getOrBuildLayer0 } from '@/services/sync/alignmentStore';
+import { savePosition } from '@/services/storage/positionStore';
 import TrackPlayer, { useProgress } from 'react-native-track-player';
 import { POSITIONS_CACHE_KEY } from '@/constants/config';
 import { logger } from '@/utils/logger';
@@ -149,23 +150,28 @@ export default function BookSessionScreen() {
 
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', () => {
-      // EPUB — save immediately on navigation away. The three in-session triggers
-      // (AppState→background, chapter-change, debounce) don't cover all cases:
-      // if the user reads for 2s without changing chapters, only beforeRemove saves.
+      // EPUB — flush immediately on navigation away in case the user closed
+      // the screen before the 1.5s debounce in ReaderView fired. Routes
+      // through savePosition so it pushes to Firestore on the same write.
       const epubPos = readerRef.current?.getLastKnownPosition();
       if (epubPos?.cfi) {
-        AsyncStorage.setItem(
-          `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
-          JSON.stringify({
+        savePosition(
+          params.bookId,
+          {
             cfi: epubPos.cfi,
             chapterIndex: epubPos.chapterIndex,
             charOffset: epubPos.charOffset ?? 0,
             percentComplete: epubPos.percentComplete ?? 0,
             updatedAt: Date.now(),
-          }),
-        ).catch(() => {});
+          },
+          {
+            userId: user?.uid ?? null,
+            deviceId: null,
+            trigger: 'navigation-leave',
+          },
+        );
       }
-      logger.info('BookSession: beforeRemove (epub saved)', {
+      logger.info('BookSession: beforeRemove', {
         hasCfi: !!epubPos?.cfi,
       });
 

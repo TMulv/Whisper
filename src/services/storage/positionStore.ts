@@ -12,40 +12,16 @@ export type EpubLastPosition = {
   updatedAt: number;
 };
 
-type RestoreCheck = () => boolean;
-
 const memoryCache = new Map<string, EpubLastPosition>();
-const restoreChecks = new Map<string, RestoreCheck>();
 
 const epubKey = (bookId: string): string =>
   `${POSITIONS_CACHE_KEY}:${bookId}:epub`;
 
-export function registerRestoreCheck(
-  bookId: string,
-  check: RestoreCheck | null,
-): void {
-  if (check) restoreChecks.set(bookId, check);
-  else restoreChecks.delete(bookId);
-}
-
 export function savePosition(
   bookId: string,
   pos: EpubLastPosition,
-  opts: { userId?: string | null; deviceId?: string | null; trigger: string; bypassRestoreCheck?: boolean },
+  opts: { userId?: string | null; deviceId?: string | null; trigger: string },
 ): void {
-  if (!opts.bypassRestoreCheck) {
-    const check = restoreChecks.get(bookId);
-    const restoreInProgress = check && check();
-    if (restoreInProgress) {
-      logger.warn('positionStore: save skipped (restore in progress)', {
-        bookId,
-        trigger: opts.trigger,
-        chapterIndex: pos.chapterIndex,
-        restoreCheckPresent: !!check,
-      });
-      return;
-    }
-  }
   if (!pos.cfi) {
     logger.debug('positionStore: save skipped (no cfi)', {
       bookId,
@@ -123,5 +99,4 @@ export function resolveByMaxPercent(
 
 export function _resetForTests(): void {
   memoryCache.clear();
-  restoreChecks.clear();
 }
