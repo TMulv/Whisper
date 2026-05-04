@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, Platform } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList, AuthStackParamList } from './types';
@@ -11,6 +11,11 @@ import { useAuth } from '@/hooks/useAuth';
 
 const Root = createNativeStackNavigator<RootStackParamList>();
 const Auth = createNativeStackNavigator<AuthStackParamList>();
+
+const LOADING_VIDEO_SOURCE = Platform.select({
+  ios: require('../../assets/moe-transparent.mp4'),
+  default: require('../../assets/moe-transparent.webm'),
+});
 
 function AuthStack() {
   return (
@@ -28,7 +33,7 @@ export default function RootNavigator() {
     return (
       <View style={styles.loading}>
         <Video
-          source={require('../../assets/moe-transparent.webm')}
+          source={LOADING_VIDEO_SOURCE}
           style={styles.loadingVideo}
           resizeMode={ResizeMode.CONTAIN}
           shouldPlay

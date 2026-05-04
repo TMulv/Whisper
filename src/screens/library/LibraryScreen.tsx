@@ -328,6 +328,11 @@ function CurrentlyReading({
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
+const EMPTY_VIDEO_SOURCE = Platform.select({
+  ios: require('../../../assets/moe-transparent.mp4'),
+  default: require('../../../assets/moe-empty.webm'),
+});
+
 function EmptyShelf({ onAdd }: { onAdd: () => void }) {
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -343,7 +348,7 @@ function EmptyShelf({ onAdd }: { onAdd: () => void }) {
   return (
     <Animated.View style={[styles.emptyWrap, { opacity: anim }]}>
       <Video
-        source={require('../../../assets/moe-empty.webm')}
+        source={EMPTY_VIDEO_SOURCE}
         style={styles.emptyMoe}
         resizeMode={ResizeMode.CONTAIN}
         shouldPlay
@@ -917,7 +922,7 @@ export default function LibraryScreen() {
   const renderHeader = () => {
     if (loading && books.length === 0) {
       return (
-        <View>
+        <View style={styles.fillHeader}>
           <Header bookCount={0} hours={0} onAdd={handleOpenModal} />
           <View style={styles.divider} />
           <MoeLoading variant="standing" message="Loading your library..." />
@@ -927,7 +932,7 @@ export default function LibraryScreen() {
 
     if (!loading && books.length === 0) {
       return (
-        <View>
+        <View style={styles.fillHeader}>
           <Header bookCount={0} hours={0} onAdd={handleOpenModal} />
           <View style={styles.divider} />
           <EmptyShelf onAdd={handleOpenModal} />
@@ -970,7 +975,7 @@ export default function LibraryScreen() {
         ListFooterComponent={rows.length > 0 ? <ShelfLine /> : null}
         contentContainerStyle={[
           styles.list,
-          { paddingBottom: tabBarHeight + 16 },
+          { flexGrow: 1, paddingBottom: tabBarHeight + 16 },
         ]}
         refreshControl={
           <RefreshControl
@@ -1265,10 +1270,13 @@ const styles = StyleSheet.create({
   },
 
   // Empty
+  fillHeader: { flex: 1 },
   emptyWrap: {
+    flex: 1,
     alignItems: 'center',
-    paddingTop: 12,
+    justifyContent: 'center',
     paddingHorizontal: 8,
+    paddingVertical: 24,
   },
   emptyMoe: {
     width: 220,

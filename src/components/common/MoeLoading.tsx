@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, View, Text } from 'react-native';
+import { StyleSheet, View, Text, Platform } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import { VoidColors, VoidFonts, VoidWeight } from '@/constants/voidTheme';
 
@@ -14,8 +14,11 @@ export default function MoeLoading({
   message,
   size = 'large',
 }: Props) {
-  const videoSource =
-    variant === 'standing' ? require('../../../assets/moe-standing.webm') : require('../../../assets/moe-walking.webm');
+  const videoSource = Platform.select(
+    variant === 'standing'
+      ? { ios: require('../../../assets/moe-transparent.mp4'), default: require('../../../assets/moe-transparent.webm') }
+      : { ios: require('../../../assets/moe-walking.mp4'), default: require('../../../assets/moe-walking.webm') },
+  );
 
   const isSmall = size === 'small';
   const videoSize = isSmall ? 160 : 240;
