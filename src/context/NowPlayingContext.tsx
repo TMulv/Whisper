@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAuth } from '@react-native-firebase/auth';
@@ -102,6 +103,18 @@ export function NowPlayingProvider({ children }: { children: React.ReactNode }) 
     if (state !== State.Paused && state !== State.Stopped) return;
     saveAudioPosition(audioPosition);
   }, [playbackState.state, audioPosition, saveAudioPosition]);
+
+  // AppState → background: flush the latest audio position. Closes the
+  // ~7s force-quit gap left by the useProgress(5000)+2s debounce loop.
+  // Mirrors the equivalent listener on the EPUB side in ReaderView.
+  useEffect(() => {
+    const onAppState = (s: AppStateStatus) => {
+      if (s !== 'background' && s !== 'inactive') return;
+      saveAudioPosition(audioPosition);
+    };
+    const sub = AppState.addEventListener('change', onAppState);
+    return () => sub.remove();
+  }, [audioPosition, saveAudioPosition]);
 
   const startPlayback = useCallback(async (
     newBook: LocalBook,
