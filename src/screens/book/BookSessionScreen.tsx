@@ -149,14 +149,23 @@ export default function BookSessionScreen() {
 
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', () => {
-      // Phase 03 R3 — beforeRemove no longer writes the EPUB position.
-      // ReaderView's three save triggers (AppState→background, chapter-change,
-      // 30s debounce) cover this case. The AppState→background trigger
-      // fires within milliseconds of unmount, structurally replacing the
-      // beforeRemove write. We log the last-known position for diagnostics
-      // only.
+      // EPUB — save immediately on navigation away. The three in-session triggers
+      // (AppState→background, chapter-change, debounce) don't cover all cases:
+      // if the user reads for 2s without changing chapters, only beforeRemove saves.
       const epubPos = readerRef.current?.getLastKnownPosition();
-      logger.info('BookSession: beforeRemove (epub no-op)', {
+      if (epubPos?.cfi && params.userId && params.deviceId) {
+        AsyncStorage.setItem(
+          `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
+          JSON.stringify({
+            cfi: epubPos.cfi,
+            chapterIndex: epubPos.chapterIndex,
+            charOffset: epubPos.charOffset ?? 0,
+            percentComplete: epubPos.percentComplete ?? 0,
+            updatedAt: Date.now(),
+          }),
+        ).catch(() => {});
+      }
+      logger.info('BookSession: beforeRemove (epub saved)', {
         hasCfi: !!epubPos?.cfi,
       });
 

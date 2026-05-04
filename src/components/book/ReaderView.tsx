@@ -594,6 +594,9 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         setCurrentChapterIndex(position.chapterIndex);
         setFromBridge(position);
         pendingRestorePositionRef.current = null;
+        pendingCfiRef.current = null;
+        setPendingCfi(null);
+        savedChapterIndexRef.current = null;
         return;
       }
 
