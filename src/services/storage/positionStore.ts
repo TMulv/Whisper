@@ -31,18 +31,20 @@ export function registerRestoreCheck(
 export function savePosition(
   bookId: string,
   pos: EpubLastPosition,
-  opts: { userId?: string | null; deviceId?: string | null; trigger: string },
+  opts: { userId?: string | null; deviceId?: string | null; trigger: string; bypassRestoreCheck?: boolean },
 ): void {
-  const check = restoreChecks.get(bookId);
-  const restoreInProgress = check && check();
-  if (restoreInProgress) {
-    logger.warn('positionStore: save skipped (restore in progress)', {
-      bookId,
-      trigger: opts.trigger,
-      chapterIndex: pos.chapterIndex,
-      restoreCheckPresent: !!check,
-    });
-    return;
+  if (!opts.bypassRestoreCheck) {
+    const check = restoreChecks.get(bookId);
+    const restoreInProgress = check && check();
+    if (restoreInProgress) {
+      logger.warn('positionStore: save skipped (restore in progress)', {
+        bookId,
+        trigger: opts.trigger,
+        chapterIndex: pos.chapterIndex,
+        restoreCheckPresent: !!check,
+      });
+      return;
+    }
   }
   if (!pos.cfi) {
     logger.debug('positionStore: save skipped (no cfi)', {

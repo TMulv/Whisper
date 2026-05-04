@@ -261,6 +261,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
           userId: user?.uid ?? null,
           deviceId: deviceId ?? null,
           trigger: 'manual-mark',
+          bypassRestoreCheck: true,
         },
       );
 
