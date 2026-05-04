@@ -52,7 +52,7 @@ export async function pushPosition(
     source: position.source,
     deviceId,
     updatedAt: position.updatedAt,
-    lastMode: position.lastMode,
+    ...(position.lastMode !== undefined && { lastMode: position.lastMode }),
   };
 
   await Promise.all([
