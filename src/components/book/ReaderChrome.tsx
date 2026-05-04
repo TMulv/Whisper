@@ -16,6 +16,7 @@ export interface ReaderChromeProps {
   onSwitchMode: (next: BookSessionMode) => void;
   onClose: () => void;
   onOpenMenu: () => void;
+  onSaveSpot?: () => void;
 }
 
 export interface ReaderChromeRef {
@@ -23,7 +24,7 @@ export interface ReaderChromeRef {
 }
 
 const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function ReaderChrome(
-  { mode, showToggle, bgColor, textColor, onSwitchMode, onClose, onOpenMenu },
+  { mode, showToggle, bgColor, textColor, onSwitchMode, onClose, onOpenMenu, onSaveSpot },
   ref,
 ) {
   const insets = useSafeAreaInsets();
@@ -123,15 +124,28 @@ const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function Rea
         </View>
 
         {mode === 'read' ? (
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={onOpenMenu}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityLabel="Open reader menu"
-            accessibilityRole="button"
-          >
-            <Text style={[styles.icon, { color: textColor }]}>⋯</Text>
-          </TouchableOpacity>
+          <>
+            {onSaveSpot && (
+              <TouchableOpacity
+                style={styles.iconBtn}
+                onPress={onSaveSpot}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                accessibilityLabel="Save my spot here"
+                accessibilityRole="button"
+              >
+                <Text style={[styles.icon, { color: textColor }]}>📍</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={onOpenMenu}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel="Open reader menu"
+              accessibilityRole="button"
+            >
+              <Text style={[styles.icon, { color: textColor }]}>⋯</Text>
+            </TouchableOpacity>
+          </>
         ) : (
           <View style={styles.iconBtn} />
         )}

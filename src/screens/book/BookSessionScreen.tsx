@@ -153,7 +153,7 @@ export default function BookSessionScreen() {
       // (AppState→background, chapter-change, debounce) don't cover all cases:
       // if the user reads for 2s without changing chapters, only beforeRemove saves.
       const epubPos = readerRef.current?.getLastKnownPosition();
-      if (epubPos?.cfi && params.userId && params.deviceId) {
+      if (epubPos?.cfi) {
         AsyncStorage.setItem(
           `${POSITIONS_CACHE_KEY}:${params.bookId}:epub`,
           JSON.stringify({
@@ -333,6 +333,7 @@ export default function BookSessionScreen() {
         onSwitchMode={handleSwitchMode}
         onClose={() => navigation.goBack()}
         onOpenMenu={handleOpenMenu}
+        onSaveSpot={() => { readerRef.current?.markPositionHere(); }}
       />
     </View>
   );

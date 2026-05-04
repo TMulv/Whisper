@@ -139,6 +139,7 @@ export interface ReaderViewRef {
   syncToAudio: (timestampSeconds: number, audioChapterIdx: number) => Promise<void>;
   openMenu: () => void;
   openSearch: () => void;
+  markPositionHere: () => boolean;
 }
 
 const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderView(
@@ -163,6 +164,7 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState('');
   const [tapSeekToast, setTapSeekToast] = useState(false);
+  const [spotSavedToast, setSpotSavedToast] = useState(false);
   const [bookTitle, setBookTitle] = useState<string | undefined>(undefined);
   const [locationsReady, setLocationsReady] = useState(false);
   const [totalLocations, setTotalLocations] = useState(0);
@@ -240,7 +242,61 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
         logger.warn('ReaderView: syncToAudio failed', err);
       }
     },
-  }), [bookId, audioChapters, chapters.length, currentChapterIndex]);
+    markPositionHere: () => {
+      const live = livePositionRef.current;
+      if (!live?.cfi) {
+        logger.warn('ReaderView: markPositionHere skipped (no live position)');
+        return false;
+      }
+      savePosition(
+        bookId,
+        {
+          cfi: live.cfi,
+          chapterIndex: live.chapterIndex,
+          charOffset: live.charOffset ?? 0,
+          percentComplete: live.percentComplete,
+          updatedAt: Date.now(),
+        },
+        {
+          userId: user?.uid ?? null,
+          deviceId: deviceId ?? null,
+          trigger: 'manual-mark',
+        },
+      );
+
+      if (audioChapters.length > 0) {
+        const totalChapters = chapters.length > 0 ? chapters.length : audioChapters.length;
+        getOrBuildLayer0(bookId, audioChapters, totalChapters)
+          .then((alignment) => {
+            const target = readerToAudio(
+              {
+                chapterIndex: live.chapterIndex,
+                cfi: live.cfi,
+                charOffset: live.charOffset ?? 0,
+                chapterFraction: -1,
+                percentComplete: live.percentComplete,
+              },
+              alignment,
+            );
+            const audioKey = `${POSITIONS_CACHE_KEY}:${bookId}:audio`;
+            return AsyncStorage.setItem(
+              audioKey,
+              JSON.stringify({
+                bookId,
+                timestampSeconds: Math.max(0, target.timestampSeconds),
+                chapterIndex: target.chapterIndex,
+                updatedAt: Date.now(),
+              }),
+            );
+          })
+          .catch((err) => logger.warn('markPositionHere: audio cache write failed', err));
+      }
+
+      setSpotSavedToast(true);
+      setTimeout(() => setSpotSavedToast(false), 1500);
+      return true;
+    },
+  }), [bookId, audioChapters, chapters.length, currentChapterIndex, user?.uid, deviceId]);
 
   useEffect(() => {
     getOrCreateDeviceId().then(setDeviceId);
@@ -897,6 +953,12 @@ const ReaderView = forwardRef<ReaderViewRef, ReaderViewProps>(function ReaderVie
       {tapSeekToast && (
         <View style={styles.tapSeekToast} pointerEvents="none">
           <Text style={styles.tapSeekToastText}>▶ Audio jumping here</Text>
+        </View>
+      )}
+
+      {spotSavedToast && (
+        <View style={styles.tapSeekToast} pointerEvents="none">
+          <Text style={styles.tapSeekToastText}>📍 Spot saved</Text>
         </View>
       )}
 
