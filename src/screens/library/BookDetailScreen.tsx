@@ -213,10 +213,9 @@ export default function BookDetailScreen() {
 
   const handleOpenReader = async () => {
     const resumeFromAudio = nowPlayingBook?.id === params.bookId;
-    const lastMode = await AsyncStorage.getItem(`@whisper/last_mode:${params.bookId}`);
     navigateRoot('BookSession', {
       bookId: params.bookId,
-      mode: (lastMode === 'read' || lastMode === 'listen') ? lastMode : 'read',
+      mode: 'read',
       resumeFromAudio,
     });
   };

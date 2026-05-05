@@ -92,7 +92,7 @@ export default function App() {
           <NavigationContainer ref={navigationRef}>
             <StatusBar style="auto" />
             <View style={styles.container}>
-              <NetworkStatusBanner />
+              {/* <NetworkStatusBanner /> */}
               <RootNavigator />
             </View>
           </NavigationContainer>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ModeToggle from './ModeToggle';
@@ -30,6 +30,7 @@ const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function Rea
   const insets = useSafeAreaInsets();
   const opacity = useRef(new Animated.Value(0)).current;
   const visibleRef = useRef(false);
+  const [visible, setVisible] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearHideTimer = () => {
@@ -42,6 +43,7 @@ const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function Rea
   const hide = () => {
     clearHideTimer();
     visibleRef.current = false;
+    setVisible(false);
     Animated.timing(opacity, {
       toValue: 0,
       duration: FADE_MS,
@@ -56,6 +58,7 @@ const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function Rea
 
   const reveal = () => {
     visibleRef.current = true;
+    setVisible(true);
     Animated.timing(opacity, {
       toValue: 1,
       duration: FADE_MS,
@@ -68,6 +71,7 @@ const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function Rea
 
   useEffect(() => {
     visibleRef.current = true;
+    setVisible(true);
     Animated.timing(opacity, {
       toValue: 1,
       duration: FADE_MS,
@@ -96,7 +100,7 @@ const ReaderChrome = forwardRef<ReaderChromeRef, ReaderChromeProps>(function Rea
       />
 
       <Animated.View
-        pointerEvents={visibleRef.current ? 'auto' : 'none'}
+        pointerEvents={visible ? 'auto' : 'none'}
         style={[
           styles.chrome,
           {
