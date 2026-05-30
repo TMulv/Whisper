@@ -9,7 +9,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.whisper.app</string>
+	<string>moe.gno.app</string>
 	<key>PROJECT_ID</key>
 	<string>whisper-640e8</string>
 	<key>STORAGE_BUCKET</key>
@@ -25,6 +25,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:475706623394:ios:4978d05df5d6b9d4499efb</string>
+	<string>1:475706623394:ios:18b0235fe8a08edd499efb</string>
 </dict>
 </plist>
