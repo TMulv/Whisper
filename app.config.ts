@@ -18,8 +18,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   ios: {
     supportsTablet: true,
-    bundleIdentifier: 'com.whisper.app',
-    googleServicesFile: './GoogleService-Info.plist',
+    bundleIdentifier: 'moe.gno.app',
+googleServicesFile: process.env.GOOGLE_SERVICES_PLIST ?? './GoogleService-Info.plist',
     infoPlist: {
       UIBackgroundModes: ['audio', 'fetch'],
       NSDocumentsFolderUsageDescription:
@@ -27,7 +27,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     },
   },
   android: {
-    package: 'com.whisper.app',
+    package: 'moe.gno.app',
     googleServicesFile: './google-services.json',
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
