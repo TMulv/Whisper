@@ -21,6 +21,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: 'moe.gno.app',
     googleServicesFile: process.env.GOOGLE_SERVICES_PLIST ?? './GoogleService-Info.plist',
     infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
       UIBackgroundModes: ['audio', 'fetch'],
       NSDocumentsFolderUsageDescription:
         'Whisper needs access to your documents to open epub and audio files.',
