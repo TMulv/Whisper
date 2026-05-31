@@ -3,7 +3,7 @@ import { withInfoPlist } from '@expo/config-plugins';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: 'Whisper',
+  name: 'gno.moe',
   slug: 'whisper',
   scheme: 'whisper',
   version: '1.0.0',
