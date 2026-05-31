@@ -19,7 +19,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     supportsTablet: true,
     bundleIdentifier: 'moe.gno.app',
-googleServicesFile: process.env.GOOGLE_SERVICES_PLIST ?? './GoogleService-Info.plist',
+    googleServicesFile: process.env.GOOGLE_SERVICES_PLIST ?? './GoogleService-Info.plist',
     infoPlist: {
       UIBackgroundModes: ['audio', 'fetch'],
       NSDocumentsFolderUsageDescription:
@@ -50,13 +50,19 @@ googleServicesFile: process.env.GOOGLE_SERVICES_PLIST ?? './GoogleService-Info.p
     'expo-secure-store',
     'expo-web-browser',
     [
+      'expo-build-properties',
+      {
+        ios: {
+          useFrameworks: 'static',
+        },
+      },
+    ],
+    [
       'expo-document-picker',
       {
         iCloudContainerEnvironment: 'Production',
       },
     ],
-    // Register Whisper as a handler for audiobook (.m4b) and ebook (.epub)
-    // files so iOS routes them here instead of to Messages or Files.
     (config: ExpoConfig) =>
       withInfoPlist(config, (c) => {
         c.modResults.CFBundleDocumentTypes = [
@@ -89,8 +95,6 @@ googleServicesFile: process.env.GOOGLE_SERVICES_PLIST ?? './GoogleService-Info.p
             LSHandlerRank: 'Alternate',
           },
         ];
-        // Declare the m4b UTI — Apple defines it but the declaration ensures
-        // it resolves even on older OS versions.
         c.modResults.UTImportedTypeDeclarations = [
           {
             UTTypeIdentifier: 'com.apple.m4b-audio',
