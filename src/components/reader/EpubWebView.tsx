@@ -123,9 +123,12 @@ const EpubWebView = forwardRef<EpubWebViewRef, Props>(function EpubWebView(
         // and we can't use expo-asset.downloadAsync on a 330 KB HTML in dev
         // (Metro's asset server rejects the fetch). Writing to document dir
         // sidesteps both.
-        const readerDir = new Directory(Paths.document, 'reader');
-        if (!readerDir.exists) readerDir.create({ intermediates: true });
-        const target = new File(readerDir, 'epub-bridge.html');
+        // Write to Documents root (not a subdirectory) so that WKWebView's
+        // loadFileURL:allowingReadAccessToURL: grants access to all of Documents/,
+        // including Documents/whisper/ where epubs are stored. If the bridge were
+        // in a subdirectory, the sandbox would only cover that subdirectory and
+        // epub.js XHR requests to Documents/whisper/*.epub would fail.
+        const target = new File(Paths.document, 'epub-bridge.html');
         if (target.exists) target.delete();
         target.create();
         target.write(EPUB_BRIDGE_HTML);
